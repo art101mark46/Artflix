@@ -19,7 +19,7 @@ from app.episode_coverage import coverage
 from app.scan_issues import ScanWarnings
 from app.encoding import valid_filename,display_filename
 from app.control import COMMIT_LOCK, fingerprint
-from app.filesystem import rename_media_files, rename_no_replace
+from app.filesystem import rename_media_files, rename_no_replace, publish_metadata_no_replace
 from app.operations import file_signature
 from app.tv_artwork import tvdb_choices, tmdb_choices
 from app.television import TVDB, completeness, inventory, read_nfo, values, serialize_nfo, safe_image, tv_language, normalize_credits, tv_cast, tvdb_image_url, normalize_episode_images, season_artwork_layout
@@ -685,12 +685,13 @@ def install_tv(app,m):
                     rename_media_files(target/parent,mapping);moved.extend((str(Path(parent)/a),str(Path(parent)/b)) for a,b in mapping.items())
                 for name,data in payload.items():
                     dest=safe_metadata_file(target,name);dest.parent.mkdir(parents=True,exist_ok=True)
-                    if not dest.exists():created.append(name)
+                    is_new=not os.path.lexists(dest)
                     fd,temp=tempfile.mkstemp(dir=dest.parent,prefix='.artflix-')
                     try:
                         with os.fdopen(fd,'wb') as handle:handle.write(data);handle.flush();os.fsync(handle.fileno())
-                        if dest.exists():os.replace(temp,dest)
-                        else:rename_no_replace(Path(temp),dest)
+                        if is_new:publish_metadata_no_replace(Path(temp),dest)
+                        else:os.replace(temp,dest)
+                        if is_new:created.append(name)
                     finally:
                         if os.path.exists(temp):os.unlink(temp)
                 previous=show_record(p['source']).get('saved_assets',{})
@@ -698,15 +699,18 @@ def install_tv(app,m):
                 # This app-owned state is not media and contains no credentials.
                 statefile=target/'.artflix-tv.json'
                 if statefile.is_symlink():raise HTTPException(409,'TV state file is a symlink.')
+                state_existed=statefile.exists()
+                if state_existed:old_contents['.artflix-tv.json']=statefile.read_bytes()
                 fd,state_temp=tempfile.mkstemp(dir=target,prefix='.artflix-state-')
                 try:
                     with os.fdopen(fd,'w') as handle:json.dump(state,handle);handle.flush();os.fsync(handle.fileno())
-                    if statefile.exists():os.replace(state_temp,statefile)
-                    else:rename_no_replace(Path(state_temp),statefile)
+                    if state_existed:os.replace(state_temp,statefile)
+                    else:publish_metadata_no_replace(Path(state_temp),statefile)
+                    if not state_existed:created.append('.artflix-tv.json')
                 finally:
                     if os.path.exists(state_temp):os.unlink(state_temp)
                 if p['folder_name']!=target.name:folder_after=target.with_name(p['folder_name']);rename_no_replace(target,folder_after)
-            except Exception:
+            except Exception as error:
                 # Videos are only moved; roll moves back without overwriting anything.
                 for name in created:
                     file=target/name
@@ -716,6 +720,7 @@ def install_tv(app,m):
                 for name,content in old_contents.items():
                     file=target/name
                     if file.parent.is_dir() and not file.is_symlink():file.write_bytes(content)
+                if isinstance(error,FileExistsError):raise HTTPException(409,'A destination appeared while saving. Review the files again; the new destination was preserved.') from error
                 raise
             if folder_after!=target:
                 init()

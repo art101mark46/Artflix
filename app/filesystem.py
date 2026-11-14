@@ -38,3 +38,44 @@ def rename_media_files(folder: Path, mapping: dict[str, str]) -> None:
             except OSError:
                 pass  # The file remains at destination; its contents are not deleted.
         raise
+
+
+def publish_metadata_no_replace(source: Path, destination: Path) -> None:
+    """Publish a finished metadata temp file, retaining exclusive creation on FUSE.
+
+    This compatibility path is deliberately unavailable to videos, subtitles and
+    directories. Media moves must still use atomic RENAME_NOREPLACE.
+    """
+    import shutil
+    import stat
+    allowed={'.nfo','.jpg','.jpeg','.png','.webp'}
+    if destination.suffix.lower() not in allowed and destination.name not in {'.artflix-tv.json','.artflix-assets.json'}:
+        raise OSError(errno.EINVAL,'Compatibility publishing is limited to metadata and artwork')
+    if source.is_symlink() or not source.is_file():raise OSError(errno.EINVAL,'Metadata source must be a regular temporary file')
+    unsupported={errno.EINVAL,errno.ENOSYS,errno.EOPNOTSUPP,errno.EXDEV}
+    try:
+        rename_no_replace(source,destination)
+        return
+    except OSError as error:
+        if error.errno not in unsupported:raise
+    # A hard link exposes complete contents atomically and refuses existing names.
+    try:
+        os.link(source,destination,follow_symlinks=False)
+    except OSError as error:
+        if error.errno not in unsupported|{errno.EPERM}:raise
+    else:
+        source.unlink();return
+    # Some user-share filesystems support neither operation. O_EXCL never opens
+    # an existing destination (including symlinks); only new metadata is copied.
+    fd=os.open(destination,os.O_WRONLY|os.O_CREAT|os.O_EXCL,stat.S_IMODE(source.stat().st_mode))
+    identity=os.fstat(fd)
+    try:
+        with os.fdopen(fd,'wb') as output,source.open('rb') as incoming:
+            shutil.copyfileobj(incoming,output);output.flush();os.fsync(output.fileno())
+    except BaseException:
+        try:
+            current=destination.lstat()
+            if (current.st_dev,current.st_ino)==(identity.st_dev,identity.st_ino):destination.unlink()
+        except FileNotFoundError:pass
+        raise
+    source.unlink()

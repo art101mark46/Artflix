@@ -180,6 +180,26 @@ class TelevisionTests(unittest.TestCase):
         self.assertEqual(episode['included_in'],'Season 01/Example Show S01E01.mkv')
         self.assertEqual((self.root/'Renamed Show'/episode['included_in']).read_bytes(),b'VIDEO MUST NEVER CHANGE')
 
+    def test_tv_portrait_save_on_filesystem_without_noreplace_or_hardlinks(self):
+        self.bundle['details']['characters']=[{'peopleId':7,'personName':'Actor One','name':'A Character','personImgURL':'https://artworks.thetvdb.com/person.jpg'}]
+        main.cache_provider('tv-series:123:official:eng',self.bundle)
+        payload=self.approve(self.payload(actor_ids=['7']))
+        with patch('app.filesystem.rename_no_replace',side_effect=OSError(22,'unsupported')),patch('app.filesystem.os.link',side_effect=OSError(95,'unsupported')),patch.object(main,'download_image',new=AsyncMock(return_value=b'PORTRAIT')):
+            result=self.client.post('/api/tv/write',json=payload,headers=self.unlock())
+        self.assertEqual(result.status_code,200,result.text);self.assertEqual((self.show/'actors/Actor One--7.jpg').read_bytes(),b'PORTRAIT');self.assertTrue((self.show/'.artflix-tv.json').exists());self.assertEqual(self.video.read_bytes(),b'VIDEO MUST NEVER CHANGE')
+
+    def test_new_portrait_collision_is_preserved_during_rollback(self):
+        self.bundle['details']['characters']=[{'peopleId':7,'personName':'Actor One','name':'A Character','personImgURL':'https://artworks.thetvdb.com/person.jpg'}]
+        main.cache_provider('tv-series:123:official:eng',self.bundle)
+        before=(self.show/'tvshow.nfo').read_bytes();payload=self.approve(self.payload(actor_ids=['7']))
+        from app.filesystem import publish_metadata_no_replace
+        def race(source,destination):
+            destination.write_bytes(b'CONCURRENT PORTRAIT')
+            return publish_metadata_no_replace(source,destination)
+        with patch('app.tv_routes.publish_metadata_no_replace',side_effect=race),patch.object(main,'download_image',new=AsyncMock(return_value=b'DOWNLOADED PORTRAIT')):
+            result=self.client.post('/api/tv/write',json=payload,headers=self.unlock())
+        self.assertEqual(result.status_code,409,result.text);self.assertEqual((self.show/'actors/Actor One--7.jpg').read_bytes(),b'CONCURRENT PORTRAIT');self.assertEqual((self.show/'tvshow.nfo').read_bytes(),before);self.assertEqual(self.video.read_bytes(),b'VIDEO MUST NEVER CHANGE')
+
     def test_scan_local_persistent_and_separate_from_movies(self):
         before={p.relative_to(self.show).as_posix():p.read_bytes() for p in self.show.rglob('*') if p.is_file()}
         with patch.object(main.tv_services['provider'],'get',new=AsyncMock(side_effect=AssertionError('Unexpected network'))):
