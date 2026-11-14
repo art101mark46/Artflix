@@ -15,6 +15,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.encoding import valid_filename,display_filename
 from app.control import COMMIT_LOCK, fingerprint
 from app.filesystem import rename_media_files, rename_no_replace
 from app.operations import file_signature
@@ -162,11 +163,15 @@ def install_tv(app,m):
         # Count/stat only: never open media or call providers during discovery.
         for number,folder in enumerate(folders,1):
             if cancelled():return {'count':found,'warnings':warnings,'cancelled':True}
-            progress(current=folder.name)
+            progress(current=display_filename(folder.name))
             try:
+                if not valid_filename(folder):
+                    warnings.append({'folder':display_filename(folder.name),'error':'Skipped folder with unsupported filename bytes. Files were left untouched.'})
+                    progress(counted_shows=number,errors=len(warnings),warnings=warnings[-20:]);continue
                 plan=count_and_signature(folder,m.VIDEO_EXTENSIONS,cancelled)
                 if plan is None:return {'count':found,'warnings':warnings,'cancelled':True}
                 plans[str(folder)]=plan
+                warnings.extend({'folder':folder.name,'error':message} for message in plan.get('warnings',[]))
             except OSError:
                 seen.add(str(folder));warnings.append({'folder':folder.name,'error':'Unable to count files in this show folder.'})
             progress(counted_shows=number,files_total=sum(p['files'] for p in plans.values()),errors=len(warnings),warnings=warnings[-20:])
@@ -175,7 +180,7 @@ def install_tv(app,m):
         for number,folder in enumerate(folders,1):
             if cancelled():break
             key=str(folder);plan=plans.get(key)
-            progress(current=folder.name,current_file='',show_files_total=plan['files'] if plan else 0,show_files_done=0)
+            progress(current=display_filename(folder.name),current_file='',show_files_total=plan['files'] if plan else 0,show_files_done=0)
             if not plan:
                 progress(checked=number);continue
             if key in known and checkpoints.get(key)==plan['signature']:
@@ -191,14 +196,15 @@ def install_tv(app,m):
                 record=show_record(folder,True,cancelled,file_progress)
                 if cancelled():break
                 probe_warnings=[{'folder':folder.name,'error':e['file']+': '+e['media']['probe_note']} for e in record['inventory']['episodes'] if (e.get('media') or {}).get('probe_note')]
-                warnings.extend(probe_warnings)
+                encoding_warnings=[{'folder':folder.name,'error':message} for message in record['inventory'].get('warnings',[])]
+                warnings.extend(w for w in probe_warnings+encoding_warnings if w not in warnings)
                 has_content=bool(record['inventory']['episodes'] or record['inventory']['unrecognized'] or record['has_nfo'])
                 # Index and completed-folder checkpoint commit together. Partial video
                 # probes are already checkpointed individually in media_cache.
                 with db() as connection:
                     if has_content:
                         connection.execute('INSERT OR REPLACE INTO tv_library VALUES (?,?)',(key,json.dumps(record)))
-                        if not probe_warnings:connection.execute('INSERT OR REPLACE INTO tv_scan_checkpoints VALUES (?,?,?)',(str(root),key,plan['signature']))
+                        if not probe_warnings and not encoding_warnings:connection.execute('INSERT OR REPLACE INTO tv_scan_checkpoints VALUES (?,?,?)',(str(root),key,plan['signature']))
                         else:connection.execute('DELETE FROM tv_scan_checkpoints WHERE root=? AND path=?',(str(root),key))
                     else:
                         connection.execute('DELETE FROM tv_library WHERE path=?',(key,))

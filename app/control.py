@@ -53,4 +53,4 @@ class ReviewSigner:
 
 
 def fingerprint(payload):
-    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=True, default=str).encode()).hexdigest()

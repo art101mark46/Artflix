@@ -26,6 +26,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel, Field
 
+from app.encoding import FilesystemJSONResponse, valid_filename, display_filename
 from app.tv_artwork import tmdb_choices, tvdb_choices
 from app.television import safe_image
 from app.library import read_movie_metadata, preserve_unmanaged_nfo_fields, metadata_document
@@ -49,7 +50,7 @@ edit_sessions = EditSessions()
 review_signer = ReviewSigner()
 scan_jobs = ScanJobs()
 
-app = FastAPI(title="ArtFlix Movie Manager", version=VERSION)
+app = FastAPI(title="ArtFlix Movie Manager", version=VERSION, default_response_class=FilesystemJSONResponse)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
 templates = Jinja2Templates(directory=APP_DIR / "templates")
 
@@ -415,8 +416,12 @@ def scan_library(progress=None, cancelled=None):
     for number, folder in enumerate(folders, 1):
         if cancelled():
             break
-        progress(current=folder.name)
+        progress(current=display_filename(folder.name))
         try:
+            invalid=next((p for p in [folder,*folder.iterdir()] if not valid_filename(p)),None)
+            if invalid is not None:
+                warnings.append({'folder':folder.name,'error':'Skipped unsupported filename bytes: '+display_filename(invalid.name)+'. Files were left untouched.'})
+                continue
             if root not in folder.resolve().parents or write not in (write / folder.relative_to(root)).resolve().parents:
                 continue
             files = [p for p in folder.iterdir() if p.is_file() and not p.is_symlink()]

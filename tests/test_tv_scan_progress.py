@@ -24,6 +24,14 @@ class PersistentScanTests(unittest.TestCase):
             restored=ScanJobs(path).status();self.assertEqual(restored['state'],'completed');self.assertFalse(restored['resume_available']);self.assertEqual(restored['files_done'],12)
             path.write_text('{bad json');self.assertEqual(ScanJobs(path).status()['state'],'idle')
 
+    def test_invalid_bytes_in_subdirectory_are_reported_and_unicode_names_work(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root=Path(directory);bad=root/('Season'+chr(0xdca1));bad.mkdir();(bad/'S01E01.mkv').write_bytes(b'KEEP')
+            good=root/'Café.S01E01.mkv';good.write_bytes(b'KEEP GOOD')
+            result=count_and_signature(root,{'.mkv'});self.assertEqual(result['files'],1);self.assertTrue(result['warnings'])
+            result=inventory(root,{'.mkv'});self.assertEqual(result['episodes'][0]['file'],good.name);self.assertTrue(result['warnings'])
+            self.assertEqual((bad/'S01E01.mkv').read_bytes(),b'KEEP')
+
     def test_count_matches_inventory_and_excludes_extras_symlinks(self):
         with tempfile.TemporaryDirectory() as directory:
             root=Path(directory)

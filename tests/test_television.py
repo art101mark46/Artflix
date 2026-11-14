@@ -127,6 +127,18 @@ class TelevisionTests(unittest.TestCase):
             main.tv_services['scan']();self.assertEqual(probe.call_count,2)
             shows=self.client.get('/api/tv/library').json()['shows'];self.assertEqual(next(s for s in shows if s['folder']==self.show.name)['metadata']['plot'],'New local plot')
 
+    def test_invalid_utf8_filename_does_not_break_scan_status_or_good_episodes(self):
+        bad=self.season/('Bad'+chr(0xdca1)+'.S01E02.mkv');bad.write_bytes(b'LEAVE THIS FILE ALONE')
+        events=[];result=main.tv_services['scan'](lambda **kw:events.append(kw))
+        self.assertFalse(result['cancelled']);self.assertTrue(any('unsupported filename' in w['error'] for w in result['warnings']))
+        response=self.client.get('/api/tv/library');self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(len(response.json()['shows'][0]['inventory']['episodes']),1)
+        headers=self.unlock();main.tv_services['jobs']._state.update(state='interrupted',current_file=bad.name)
+        response=self.client.get('/api/tv/scan/status');self.assertEqual(response.status_code,200,response.text);self.assertEqual(response.json()['current_file'],bad.name)
+        self.assertEqual(bad.read_bytes(),b'LEAVE THIS FILE ALONE')
+        folder=self.root/('Bad'+chr(0xdca2));folder.mkdir();(folder/'S01E01.mkv').write_bytes(b'BAD FOLDER VIDEO')
+        result=main.tv_services['scan']();self.assertTrue(any('Skipped folder' in w['error'] for w in result['warnings']))
+
     def test_scan_local_persistent_and_separate_from_movies(self):
         before={p.relative_to(self.show).as_posix():p.read_bytes() for p in self.show.rglob('*') if p.is_file()}
         with patch.object(main.tv_services['provider'],'get',new=AsyncMock(side_effect=AssertionError('Unexpected network'))):

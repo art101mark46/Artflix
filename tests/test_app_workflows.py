@@ -71,6 +71,12 @@ class AppWorkflowTests(unittest.TestCase):
         bad={**payload,'artwork':{'poster.jpg':'https://image.tmdb.org.evil.test/a.jpg'}}
         self.assertEqual(self.client.post('/api/write/preview',json=bad).status_code,400)
 
+    def test_scan_warns_on_invalid_filename_bytes_without_touching_files(self):
+        bad=self.movie/('Bad'+chr(0xdca1)+'.mkv');bad.write_bytes(b'UNCHANGED')
+        result=self.client.get('/api/scan');self.assertEqual(result.status_code,200,result.text)
+        self.assertTrue(any('unsupported filename' in row['error'] for row in result.json()['warnings']))
+        self.assertEqual(bad.read_bytes(),b'UNCHANGED');self.assertEqual(self.video.read_bytes(),b'VIDEO MUST STAY EXACT')
+
     def fake_probe(self,path):
         return {'name':path.name,'size_bytes':path.stat().st_size,'duration':5400,'video':[{'codec':'h264','width':1920,'height':1080,'aspect_ratio':'16:9','scan_type':'Progressive'}],'audio':[{'codec':'ac3','channels':6,'language':'eng'}],'subtitles':[]}
 

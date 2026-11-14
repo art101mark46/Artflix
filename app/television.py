@@ -3,6 +3,7 @@
 Scanning never contacts providers or modifies library files. Aired order is explicit;
 provider inventories are saved only after every page has been fetched successfully.
 """
+from app.encoding import valid_filename,display_filename
 from app.tv_scan import directories
 import datetime as dt
 import json
@@ -70,17 +71,21 @@ def episode_numbers(name):
 
 
 def inventory(folder, extensions, probe=None, cancelled=None, progress=None):
-    episodes=[];unrecognized=[];extras=[]
+    episodes=[];unrecognized=[];extras=[];warnings=[]
     cancelled=cancelled or (lambda:False)
-    for directory,files in directories(folder,cancelled):
+    for directory,files in directories(folder,cancelled,warnings.append):
         if cancelled():break
-        subtitles=[name for name in files if (directory/name).suffix.lower() in {'.srt','.ass','.ssa','.sub','.idx','.vtt','.sup'} and not (directory/name).is_symlink() and (directory/name).is_file()]
+        subtitles=[name for name in files if valid_filename(name) and (directory/name).suffix.lower() in {'.srt','.ass','.ssa','.sub','.idx','.vtt','.sup'} and not (directory/name).is_symlink() and (directory/name).is_file()]
         for name in sorted(files):
             if cancelled():break
             path=Path(directory)/name
             if path.is_symlink() or path.suffix.lower() not in extensions:continue
             relative=path.relative_to(folder).as_posix()
             if re.search(r'(?i)[._-](sample|trailer)$',path.stem):extras.append(relative);continue
+            if not valid_filename(path):
+                warnings.append('Skipped video with unsupported filename bytes: '+display_filename(relative)+'. File was left untouched.')
+                if progress:progress(file=display_filename(relative),phase='finished')
+                continue
             if progress:progress(file=relative,phase='reading')
             numbers=episode_numbers(path.stem)
             doc=read_nfo(path.with_suffix('.nfo'),'episodedetails')
@@ -94,7 +99,7 @@ def inventory(folder, extensions, probe=None, cancelled=None, progress=None):
             sidecars=[name for name in subtitles if Path(name).stem==path.stem or name.startswith(path.stem+'.')]
             episodes.append({'file':relative,'sidecars':sidecars,'numbers':[list(n) for n in numbers],'metadata':values(doc),'has_nfo':doc is not None,'media':probe(path) if probe else None})
             if progress:progress(file=relative,phase='finished')
-    return {'episodes':episodes,'unrecognized':unrecognized,'extras':extras}
+    return {'episodes':episodes,'unrecognized':unrecognized,'extras':extras,'warnings':warnings}
 
 
 def completeness(local, remote, include_specials=False, today=None):
