@@ -4,7 +4,7 @@ import tempfile
 import unittest
 import httpx
 from pathlib import Path
-from unittest.mock import AsyncMock,patch
+from unittest.mock import AsyncMock,patch,Mock
 
 from fastapi.testclient import TestClient
 from app import main
@@ -81,6 +81,51 @@ class TelevisionTests(unittest.TestCase):
         bad={**payload,'artwork':{'poster.jpg':'https://image.tmdb.org.evil.test/a.jpg'}}
         self.assertEqual(self.client.post('/api/tv/write/preview',json=bad).status_code,400)
         self.assertEqual(self.video.read_bytes(),b'VIDEO MUST NEVER CHANGE')
+
+    def test_scan_reports_files_and_reuses_unchanged_shows(self):
+        events=[];calls=[]
+        def probe(path):calls.append(path.name);return {'name':path.name,'size_bytes':path.stat().st_size,'video':[],'audio':[],'subtitles':[]}
+        before={str(p):p.read_bytes() for p in self.show.rglob('*') if p.is_file()}
+        with patch.object(main,'probe_video',side_effect=probe):
+            main.tv_services['scan'](lambda **kw:events.append(kw))
+            self.assertEqual(len(calls),1);self.assertTrue(any(e.get('current_file')=='Season 01/Show.S01E01.mkv' for e in events));self.assertTrue(any(e.get('files_total')==1 for e in events))
+            events.clear();main.tv_services['scan'](lambda **kw:events.append(kw));self.assertEqual(len(calls),1);self.assertTrue(any(e.get('reused_shows')==1 for e in events))
+            self.video.write_bytes(b'NEW FILE CONTENT');main.tv_services['scan']();self.assertEqual(len(calls),2)
+        self.assertEqual(before[str(self.video)],b'VIDEO MUST NEVER CHANGE')
+        self.assertEqual((self.show/'tvshow.nfo').read_bytes(),before[str(self.show/'tvshow.nfo')])
+
+    def test_cancel_mid_show_retains_completed_probes_for_resume(self):
+        second=self.season/'Show.S01E02.mkv';second.write_bytes(b'SECOND VIDEO')
+        cancelled=False;calls=[]
+        def progress(**kw):
+            nonlocal cancelled
+            if kw.get('files_done')==1:cancelled=True
+        def probe(path):calls.append(path.name);return {'name':path.name,'video':[],'audio':[],'subtitles':[]}
+        with patch.object(main,'probe_video',side_effect=probe):
+            result=main.tv_services['scan'](progress,lambda:cancelled);self.assertTrue(result['cancelled']);self.assertEqual(len(calls),1)
+            self.assertEqual(self.client.get('/api/tv/library').json()['shows'],[])
+            events=[];main.tv_services['scan'](lambda **kw:events.append(kw));self.assertEqual(len(calls),2)
+        self.assertEqual(len(self.client.get('/api/tv/library').json()['shows']),1)
+        self.assertTrue(any(e.get('show_files_done')==2 for e in events));self.assertEqual(second.read_bytes(),b'SECOND VIDEO')
+
+    def test_failed_probe_is_retried_and_not_checkpointed_as_unchanged(self):
+        with patch.object(main,'probe_video',new=Mock(side_effect=[{'probe_note':'Temporary timeout','name':self.video.name},{'name':self.video.name,'video':[],'audio':[],'subtitles':[]}])) as probe:
+            first=main.tv_services['scan']();self.assertTrue(first['warnings'])
+            second=main.tv_services['scan']();self.assertEqual(probe.call_count,2);self.assertEqual(second['warnings'],[])
+
+    def test_resume_skips_completed_folder_but_detects_metadata_changes(self):
+        other=self.root/'Z Other';other.mkdir();(other/'Other.S01E01.mkv').write_bytes(b'OTHER VIDEO')
+        stop=False;events=[]
+        def progress(**kw):
+            nonlocal stop
+            if kw.get('checked')==1:stop=True
+        with patch.object(main,'probe_video',side_effect=lambda path:{'name':path.name,'video':[],'audio':[],'subtitles':[]}) as probe:
+            self.assertTrue(main.tv_services['scan'](progress,lambda:stop)['cancelled']);self.assertEqual(probe.call_count,1)
+            main.tv_services['scan'](lambda **kw:events.append(kw));self.assertEqual(probe.call_count,2)
+            self.assertTrue(any(e.get('reused_shows')==1 for e in events));self.assertEqual(len(self.client.get('/api/tv/library').json()['shows']),2)
+            nfo=self.show/'tvshow.nfo';nfo.write_text(nfo.read_text().replace('Local plot','New local plot'))
+            main.tv_services['scan']();self.assertEqual(probe.call_count,2)
+            shows=self.client.get('/api/tv/library').json()['shows'];self.assertEqual(next(s for s in shows if s['folder']==self.show.name)['metadata']['plot'],'New local plot')
 
     def test_scan_local_persistent_and_separate_from_movies(self):
         before={p.relative_to(self.show).as_posix():p.read_bytes() for p in self.show.rglob('*') if p.is_file()}

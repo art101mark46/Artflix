@@ -464,7 +464,7 @@ $('#scan-cancel').onclick=async()=>{try{await api('/api/scan/cancel',{method:'PO
 async function pollScan(){
  clearTimeout(scanPollTimer);
  try{
-  const job=await api('/api/scan/status'),active=['running','cancelling'].includes(job.state);if(typeof libraryMode!=='undefined'&&libraryMode!=='movies'){if(active)scanPollTimer=setTimeout(pollScan,1000);else await reloadLibrary();return}scanProgress.hidden=false;$('#scan').disabled=active;$('#scan-cancel').hidden=!active;$('#scan-cancel').disabled=job.state==='cancelling';
+  const job=await api('/api/scan/status'),active=['running','cancelling'].includes(job.state);if(typeof libraryMode!=='undefined'&&libraryMode!=='movies'){if(active)scanPollTimer=setTimeout(pollScan,1000);else await reloadLibrary();return}scanProgress.hidden=false;if($('#tv-scan-details'))$('#tv-scan-details').hidden=true;$('#scan').disabled=active;$('#scan-cancel').hidden=!active;$('#scan-cancel').disabled=job.state==='cancelling';
   $('#scan-meter').max=job.total||1;$('#scan-meter').value=job.checked||0;
   $('#scan-summary').textContent=`${job.checked||0} / ${job.total||0} folders · ${job.found||0} movies · ${job.new||0} new · ${job.errors||0} errors · ${Math.floor((job.elapsed||0)/60)}m ${Math.floor((job.elapsed||0)%60)}s`;
   $('#scan-current').textContent=job.state==='cancelling'?'Stopping after the current file…':job.current||'';

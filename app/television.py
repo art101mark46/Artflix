@@ -3,6 +3,7 @@
 Scanning never contacts providers or modifies library files. Aired order is explicit;
 provider inventories are saved only after every page has been fetched successfully.
 """
+from app.tv_scan import directories
 import datetime as dt
 import json
 import os
@@ -68,26 +69,31 @@ def episode_numbers(name):
     return [(int(match[1]),int(match[2]))] if match else []
 
 
-def inventory(folder, extensions, probe=None, cancelled=None):
+def inventory(folder, extensions, probe=None, cancelled=None, progress=None):
     episodes=[];unrecognized=[];extras=[]
     cancelled=cancelled or (lambda:False)
-    for directory,dirs,files in os.walk(folder,followlinks=False):
+    for directory,files in directories(folder,cancelled):
         if cancelled():break
-        dirs[:]=[d for d in dirs if not (Path(directory)/d).is_symlink() and d.casefold() not in EXTRAS and not d.startswith('.') and d not in {'actors','backups'}]
+        subtitles=[name for name in files if (directory/name).suffix.lower() in {'.srt','.ass','.ssa','.sub','.idx','.vtt','.sup'} and not (directory/name).is_symlink() and (directory/name).is_file()]
         for name in sorted(files):
             if cancelled():break
             path=Path(directory)/name
             if path.is_symlink() or path.suffix.lower() not in extensions:continue
             relative=path.relative_to(folder).as_posix()
             if re.search(r'(?i)[._-](sample|trailer)$',path.stem):extras.append(relative);continue
+            if progress:progress(file=relative,phase='reading')
             numbers=episode_numbers(path.stem)
             doc=read_nfo(path.with_suffix('.nfo'),'episodedetails')
             if not numbers and doc is not None:
                 try:numbers=[(int(doc.findtext('season')),int(doc.findtext('episode')))]
                 except (ValueError,TypeError):pass
-            if not numbers:unrecognized.append(relative);continue
-            sidecars=[p.name for p in path.parent.iterdir() if p.is_file() and not p.is_symlink() and p.suffix.lower() in {'.srt','.ass','.ssa','.sub','.idx','.vtt','.sup'} and (p.stem==path.stem or p.name.startswith(path.stem+'.'))]
+            if not numbers:
+                unrecognized.append(relative)
+                if progress:progress(file=relative,phase='finished')
+                continue
+            sidecars=[name for name in subtitles if Path(name).stem==path.stem or name.startswith(path.stem+'.')]
             episodes.append({'file':relative,'sidecars':sidecars,'numbers':[list(n) for n in numbers],'metadata':values(doc),'has_nfo':doc is not None,'media':probe(path) if probe else None})
+            if progress:progress(file=relative,phase='finished')
     return {'episodes':episodes,'unrecognized':unrecognized,'extras':extras}
 
 

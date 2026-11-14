@@ -347,3 +347,24 @@ Published image: `ghcr.io/art101mark46/artflix:latest`. GitHub Actions tests eac
 change before publishing. See [GitHub and Unraid updates](docs/github-updates.md)
 for switching an existing installation without changing its appdata or media
 mappings. The local-image Compose example is retained for offline installations.
+
+### TV scan progress and recovery (0.4.1)
+
+The TV scan first counts video files without opening their contents. Expand
+**Episode scan progress** in the scan panel to see the current show/episode file,
+time on that file, checked/remaining video counts and the current show's progress.
+A combined-episode video counts as one file; extras, actor folders and symlinks
+are excluded. The initial count reflects the files discovered at scan time.
+
+Status is saved atomically under `/config/tv-scan-status.json`. Completed-folder
+checkpoints and per-video technical details are stored in SQLite. After a server
+restart or cancelled scan, open TV Shows and click **Resume scan**. Discovery
+runs again to detect changes, unchanged completed shows are skipped, and a partial
+show reuses successful probes for unchanged videos. Subsequent normal scans use
+the same incremental behaviour. Changed NFO/artwork/file statistics invalidate a
+folder checkpoint; changed video size/mtime invalidates its technical-details
+cache. Failed probes remain visible as warnings and are retried on later scans.
+Scanning only reads the media shares; index and checkpoint writes go to config.
+
+An interrupted scan from a version before 0.4.1 has no saved job status, but its
+existing successful video-probe cache is still reused when Scan is clicked.

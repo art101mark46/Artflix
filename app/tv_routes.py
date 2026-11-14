@@ -22,6 +22,7 @@ from app.tv_artwork import tvdb_choices, tmdb_choices
 from app.television import TVDB, completeness, inventory, read_nfo, values, serialize_nfo, safe_image, tv_language, normalize_credits, tv_cast, tvdb_image_url, normalize_episode_images, season_artwork_layout
 from app.review_selection import select_operations, subset_outputs
 from app.jobs import ScanJobs
+from app.tv_scan import count_and_signature
 
 
 class TVFolder(BaseModel):
@@ -88,13 +89,14 @@ class TVRestore(TVFolder):
 
 
 def install_tv(app,m):
-    provider=TVDB(m.load_config);jobs=ScanJobs()
+    provider=TVDB(m.load_config);jobs=ScanJobs(state_path=lambda:m.DATA_DIR/'tv-scan-status.json')
     def db():
         ctx=m.database()
         return ctx
     def init():
         with db() as connection:
             connection.execute('CREATE TABLE IF NOT EXISTS tv_display_images(path TEXT PRIMARY KEY,name TEXT)')
+            connection.execute('CREATE TABLE IF NOT EXISTS tv_scan_checkpoints(root TEXT,path TEXT,signature TEXT,PRIMARY KEY(root,path))')
             connection.execute('CREATE TABLE IF NOT EXISTS tv_library(path TEXT PRIMARY KEY,data TEXT)')
             connection.execute('CREATE TABLE IF NOT EXISTS tv_saved_searches(id TEXT PRIMARY KEY,name TEXT,filters TEXT,archived INTEGER NOT NULL DEFAULT 0)')
             connection.execute('CREATE TABLE IF NOT EXISTS tv_backups(id TEXT PRIMARY KEY,folder TEXT,file TEXT,created REAL)')
@@ -130,9 +132,9 @@ def install_tv(app,m):
             for name in files:
                 file=Path(directory)/name;result[file.relative_to(folder).as_posix()]=file_signature(file)
         return result
-    def show_record(folder,probe=False,cancelled=None):
+    def show_record(folder,probe=False,cancelled=None,progress=None):
         data=values(read_nfo(folder/'tvshow.nfo','tvshow'))
-        inv=inventory(folder,m.VIDEO_EXTENSIONS,m.video_info if probe else None,cancelled)
+        inv=inventory(folder,m.VIDEO_EXTENSIONS,m.video_info if probe else None,cancelled,progress)
         try:series_id=int(data.get('tvdb_id') or 0)
         except ValueError:series_id=0
         state={}
@@ -151,27 +153,69 @@ def install_tv(app,m):
         return record
     def scan(progress=None,cancelled=None):
         init();root,_=roots();progress=progress or (lambda **kw:None);cancelled=cancelled or (lambda:False)
-        folders=sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink()),key=lambda p:p.name.casefold());seen=set();warnings=[];found=0
-        progress(total=len(folders),checked=0,found=0,new=0,errors=0)
-        with db() as connection:known={row[0] for row in connection.execute('SELECT path FROM tv_library')}
-        new=0
+        folders=sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith('.')),key=lambda p:p.name.casefold())
+        seen=set();warnings=[];found=0;new=0;files_done=0;reused=0;plans={}
+        progress(phase='counting',total=len(folders),checked=0,found=0,new=0,errors=0,files_total=0,files_done=0,reused_shows=0,current_file='',counted_shows=0,show_files_total=0,show_files_done=0,resume_available=True)
+        with db() as connection:
+            known={row[0] for row in connection.execute('SELECT path FROM tv_library')}
+            checkpoints={row[0]:row[1] for row in connection.execute('SELECT path,signature FROM tv_scan_checkpoints WHERE root=?',(str(root),))}
+        # Count/stat only: never open media or call providers during discovery.
         for number,folder in enumerate(folders,1):
-            if cancelled():break
+            if cancelled():return {'count':found,'warnings':warnings,'cancelled':True}
             progress(current=folder.name)
             try:
-                record=show_record(folder,True,cancelled)
-                if cancelled():break
-                if record['inventory']['episodes'] or record['inventory']['unrecognized'] or record['has_nfo']:
-                    with db() as connection:connection.execute('INSERT OR REPLACE INTO tv_library VALUES (?,?)',(str(folder),json.dumps(record)))
-                    seen.add(str(folder));found+=1;new+=str(folder) not in known
+                plan=count_and_signature(folder,m.VIDEO_EXTENSIONS,cancelled)
+                if plan is None:return {'count':found,'warnings':warnings,'cancelled':True}
+                plans[str(folder)]=plan
             except OSError:
-                seen.add(str(folder));warnings.append({'folder':folder.name,'error':'Unable to read this show folder.'})
+                seen.add(str(folder));warnings.append({'folder':folder.name,'error':'Unable to count files in this show folder.'})
+            progress(counted_shows=number,files_total=sum(p['files'] for p in plans.values()),errors=len(warnings),warnings=warnings[-20:])
+        files_total=sum(p['files'] for p in plans.values())
+        progress(phase='scanning',files_total=files_total)
+        for number,folder in enumerate(folders,1):
+            if cancelled():break
+            key=str(folder);plan=plans.get(key)
+            progress(current=folder.name,current_file='',show_files_total=plan['files'] if plan else 0,show_files_done=0)
+            if not plan:
+                progress(checked=number);continue
+            if key in known and checkpoints.get(key)==plan['signature']:
+                seen.add(key);found+=1;reused+=1;files_done+=plan['files']
+                progress(checked=number,found=found,new=new,reused_shows=reused,files_done=files_done,show_files_done=plan['files'])
+                continue
+            show_done=0
+            def file_progress(file,phase):
+                nonlocal files_done,show_done
+                if phase=='finished':files_done+=1;show_done+=1
+                progress(current_file=file,files_done=files_done,show_files_done=show_done,file_started=time.time() if phase=='reading' else None)
+            try:
+                record=show_record(folder,True,cancelled,file_progress)
+                if cancelled():break
+                probe_warnings=[{'folder':folder.name,'error':e['file']+': '+e['media']['probe_note']} for e in record['inventory']['episodes'] if (e.get('media') or {}).get('probe_note')]
+                warnings.extend(probe_warnings)
+                has_content=bool(record['inventory']['episodes'] or record['inventory']['unrecognized'] or record['has_nfo'])
+                # Index and completed-folder checkpoint commit together. Partial video
+                # probes are already checkpointed individually in media_cache.
+                with db() as connection:
+                    if has_content:
+                        connection.execute('INSERT OR REPLACE INTO tv_library VALUES (?,?)',(key,json.dumps(record)))
+                        if not probe_warnings:connection.execute('INSERT OR REPLACE INTO tv_scan_checkpoints VALUES (?,?,?)',(str(root),key,plan['signature']))
+                        else:connection.execute('DELETE FROM tv_scan_checkpoints WHERE root=? AND path=?',(str(root),key))
+                    else:
+                        connection.execute('DELETE FROM tv_library WHERE path=?',(key,))
+                        connection.execute('DELETE FROM tv_scan_checkpoints WHERE root=? AND path=?',(str(root),key))
+                if has_content:seen.add(key);found+=1;new+=key not in known
+            except OSError:
+                seen.add(key);warnings.append({'folder':folder.name,'error':'Unable to read this show folder.'})
             progress(checked=number,found=found,new=new,errors=len(warnings),warnings=warnings[-20:])
-        if not cancelled():
+        stopped=cancelled()
+        if not stopped:
             with db() as connection:
                 for old in known-seen:
-                    if Path(old).parent==root:connection.execute('DELETE FROM tv_library WHERE path=?',(old,))
-        return {'count':found,'warnings':warnings,'cancelled':cancelled()}
+                    if Path(old).parent==root:
+                        connection.execute('DELETE FROM tv_library WHERE path=?',(old,))
+                        connection.execute('DELETE FROM tv_scan_checkpoints WHERE root=? AND path=?',(str(root),old))
+            progress(phase='complete',current_file='')
+        return {'count':found,'warnings':warnings,'cancelled':stopped}
     @app.get('/api/tv/saved-searches')
     def tv_saved_searches():
         init()

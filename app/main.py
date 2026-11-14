@@ -662,10 +662,12 @@ def video_info(path: Path) -> dict[str, Any]:
     with database() as db:
         row = db.execute("SELECT data FROM media_cache WHERE path=? AND signature=?", (str(path), signature)).fetchone()
     if row:
-        return json.loads(row[0])
+        cached=json.loads(row[0])
+        if not cached.get('probe_note'):return cached
     data = probe_video(path)
-    with database() as db:
-        db.execute("INSERT OR REPLACE INTO media_cache VALUES (?,?,?)", (str(path), signature, json.dumps(data)))
+    if not data.get('probe_note'):
+        with database() as db:
+            db.execute("INSERT OR REPLACE INTO media_cache VALUES (?,?,?)", (str(path), signature, json.dumps(data)))
     return data
 
 
