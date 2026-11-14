@@ -15,6 +15,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.scan_issues import ScanWarnings
 from app.encoding import valid_filename,display_filename
 from app.control import COMMIT_LOCK, fingerprint
 from app.filesystem import rename_media_files, rename_no_replace
@@ -155,7 +156,7 @@ def install_tv(app,m):
     def scan(progress=None,cancelled=None):
         init();root,_=roots();progress=progress or (lambda **kw:None);cancelled=cancelled or (lambda:False)
         folders=sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith('.')),key=lambda p:p.name.casefold())
-        seen=set();warnings=[];found=0;new=0;files_done=0;reused=0;plans={}
+        seen=set();warnings=ScanWarnings(db,"tv",root);found=0;new=0;files_done=0;reused=0;plans={}
         progress(phase='counting',total=len(folders),checked=0,found=0,new=0,errors=0,files_total=0,files_done=0,reused_shows=0,current_file='',counted_shows=0,show_files_total=0,show_files_done=0,resume_available=True)
         with db() as connection:
             known={row[0] for row in connection.execute('SELECT path FROM tv_library')}
@@ -166,12 +167,12 @@ def install_tv(app,m):
             progress(current=display_filename(folder.name))
             try:
                 if not valid_filename(folder):
-                    warnings.append({'folder':display_filename(folder.name),'error':'Skipped folder with unsupported filename bytes. Files were left untouched.'})
+                    warnings.append({'folder':display_filename(folder.name),'path':str(folder),'error':'Skipped folder with unsupported filename bytes. Files were left untouched.'})
                     progress(counted_shows=number,errors=len(warnings),warnings=warnings[-20:]);continue
                 plan=count_and_signature(folder,m.VIDEO_EXTENSIONS,cancelled)
                 if plan is None:return {'count':found,'warnings':warnings,'cancelled':True}
                 plans[str(folder)]=plan
-                warnings.extend({'folder':folder.name,'error':message} for message in plan.get('warnings',[]))
+                warnings.extend({'folder':folder.name,**issue} for issue in plan.get('issues',[]))
             except OSError:
                 seen.add(str(folder));warnings.append({'folder':folder.name,'error':'Unable to count files in this show folder.'})
             progress(counted_shows=number,files_total=sum(p['files'] for p in plans.values()),errors=len(warnings),warnings=warnings[-20:])
@@ -195,8 +196,8 @@ def install_tv(app,m):
             try:
                 record=show_record(folder,True,cancelled,file_progress)
                 if cancelled():break
-                probe_warnings=[{'folder':folder.name,'error':e['file']+': '+e['media']['probe_note']} for e in record['inventory']['episodes'] if (e.get('media') or {}).get('probe_note')]
-                encoding_warnings=[{'folder':folder.name,'error':message} for message in record['inventory'].get('warnings',[])]
+                probe_warnings=[{'folder':folder.name,'path':str(folder/e['file']),'error':e['file']+': '+e['media']['probe_note']} for e in record['inventory']['episodes'] if (e.get('media') or {}).get('probe_note')]
+                encoding_warnings=[{'folder':folder.name,**issue} for issue in record['inventory'].get('issues',[])]
                 warnings.extend(w for w in probe_warnings+encoding_warnings if w not in warnings)
                 has_content=bool(record['inventory']['episodes'] or record['inventory']['unrecognized'] or record['has_nfo'])
                 # Index and completed-folder checkpoint commit together. Partial video

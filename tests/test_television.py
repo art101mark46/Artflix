@@ -139,6 +139,23 @@ class TelevisionTests(unittest.TestCase):
         folder=self.root/('Bad'+chr(0xdca2));folder.mkdir();(folder/'S01E01.mkv').write_bytes(b'BAD FOLDER VIDEO')
         result=main.tv_services['scan']();self.assertTrue(any('Skipped folder' in w['error'] for w in result['warnings']))
 
+    def test_skipped_file_report_persists_exact_path_and_downloads(self):
+        bad=self.season/('Bad'+chr(0xdca1)+'.S01E02.mkv');bad.write_bytes(b'UNCHANGED')
+        main.tv_services['scan']()
+        response=self.client.get('/api/scan/issues');self.assertEqual(response.status_code,200,response.text)
+        record=next(row for row in response.json()['issues'] if row['library']=='tv')
+        self.assertIn('unsupported filename',record['reason']);self.assertIn('Bad',record['path']);self.assertEqual(bytes.fromhex(record['path_bytes_hex']),os.fsencode(bad))
+        self.assertTrue(record['time']);self.assertTrue(record['scan_id'])
+        text=self.client.get('/api/scan/issues/download');self.assertEqual(text.status_code,200);self.assertIn(record['path'],text.text);self.assertIn('attachment',text.headers['content-disposition'])
+        main.tv_services['jobs']._state={'state':'idle'}
+        self.assertEqual(self.client.get('/api/scan/issues').json()['total'],1)
+        bad.rename(self.season/'Fixed.S01E02.mkv');main.tv_services['scan']()
+        self.assertEqual(self.client.get('/api/scan/issues').json()['total'],1)
+        bad_directory=self.show/('Season'+chr(0xdca2));bad_directory.mkdir();(bad_directory/'S02E01.mkv').write_bytes(b'UNCHANGED DIRECTORY')
+        main.tv_services['scan']();report=self.client.get('/api/scan/issues').json();self.assertEqual(report['total'],2)
+        directory_issue=next(row for row in report['issues'] if 'Skipped directory' in row['reason'])
+        self.assertEqual(bytes.fromhex(directory_issue['path_bytes_hex']),os.fsencode(bad_directory))
+
     def test_scan_local_persistent_and_separate_from_movies(self):
         before={p.relative_to(self.show).as_posix():p.read_bytes() for p in self.show.rglob('*') if p.is_file()}
         with patch.object(main.tv_services['provider'],'get',new=AsyncMock(side_effect=AssertionError('Unexpected network'))):

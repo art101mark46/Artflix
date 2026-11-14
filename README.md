@@ -368,3 +368,15 @@ Scanning only reads the media shares; index and checkpoint writes go to config.
 
 An interrupted scan from a version before 0.4.1 has no saved job status, but its
 existing successful video-probe cache is still reused when Scan is clicked.
+
+### Skipped-file reports (0.4.3)
+
+Movie and TV scan warnings are saved immediately in the `scan_issues` table in
+`/config/artflix.sqlite3`. Open Settings → About → Skipped files and scan warnings,
+then Show scan warnings, or download the full text report from there or the scan
+warning panel. The view lists the newest 200; the export includes the full history.
+Each record includes the library, time, file/folder path and reason. For malformed
+filenames, the report also retains the exact original path bytes in hexadecimal
+so the intended file can be identified without guessing its encoding. Reports
+survive cancelled scans and restarts. Historical entries remain after corrections;
+scan again to check the corrected file. Collection begins with this release.

@@ -76,6 +76,7 @@ class AppWorkflowTests(unittest.TestCase):
         result=self.client.get('/api/scan');self.assertEqual(result.status_code,200,result.text)
         self.assertTrue(any('unsupported filename' in row['error'] for row in result.json()['warnings']))
         self.assertEqual(bad.read_bytes(),b'UNCHANGED');self.assertEqual(self.video.read_bytes(),b'VIDEO MUST STAY EXACT')
+        report=self.client.get('/api/scan/issues').json();self.assertEqual(report['total'],1);self.assertEqual(report['issues'][0]['library'],'movies');self.assertIn('Bad',report['issues'][0]['path'])
 
     def fake_probe(self,path):
         return {'name':path.name,'size_bytes':path.stat().st_size,'duration':5400,'video':[{'codec':'h264','width':1920,'height':1080,'aspect_ratio':'16:9','scan_type':'Progressive'}],'audio':[{'codec':'ac3','channels':6,'language':'eng'}],'subtitles':[]}

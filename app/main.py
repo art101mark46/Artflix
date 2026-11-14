@@ -26,6 +26,7 @@ from fastapi.templating import Jinja2Templates
 from fastapi import Request
 from pydantic import BaseModel, Field
 
+from app.scan_issues import ScanWarnings,install_scan_issues
 from app.encoding import FilesystemJSONResponse, valid_filename, display_filename
 from app.tv_artwork import tmdb_choices, tvdb_choices
 from app.television import safe_image
@@ -407,7 +408,7 @@ def scan_library(progress=None, cancelled=None):
     progress = progress or (lambda **kwargs: None)
     cancelled = cancelled or (lambda: False)
     root, write = paths()
-    movies, warnings = [], []
+    movies, warnings = [], ScanWarnings(database,"movies",root)
     folders = sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink()), key=lambda p: p.name.casefold())
     with database() as db:
         known_paths = {row[0] for row in db.execute("SELECT path FROM library").fetchall()}
@@ -420,7 +421,7 @@ def scan_library(progress=None, cancelled=None):
         try:
             invalid=next((p for p in [folder,*folder.iterdir()] if not valid_filename(p)),None)
             if invalid is not None:
-                warnings.append({'folder':folder.name,'error':'Skipped unsupported filename bytes: '+display_filename(invalid.name)+'. Files were left untouched.'})
+                warnings.append({'folder':folder.name,'path':str(invalid),'error':'Skipped unsupported filename bytes: '+display_filename(invalid.name)+'. Files were left untouched.'})
                 continue
             if root not in folder.resolve().parents or write not in (write / folder.relative_to(root)).resolve().parents:
                 continue
@@ -437,7 +438,7 @@ def scan_library(progress=None, cancelled=None):
                     info = video_info(path)
                     media.append(info)
                     if info.get("probe_note"):
-                        warnings.append({"folder": folder.name, "error": path.name + ": " + info["probe_note"]})
+                        warnings.append({"folder": folder.name, "path":str(path), "error": path.name + ": " + info["probe_note"]})
             if cancelled():
                 break
             existing = read_movie_metadata(folder, VIDEO_EXTENSIONS, media)
@@ -1431,3 +1432,5 @@ tv_services = install_tv(app, sys.modules[__name__])
 
 from app.maintenance import install_maintenance
 install_maintenance(app, sys.modules[__name__])
+
+install_scan_issues(app, sys.modules[__name__])
