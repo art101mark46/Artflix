@@ -15,6 +15,7 @@ from fastapi import HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from app.episode_coverage import coverage
 from app.scan_issues import ScanWarnings
 from app.encoding import valid_filename,display_filename
 from app.control import COMMIT_LOCK, fingerprint
@@ -63,6 +64,13 @@ class TVWrite(TVFolder):
     review_token: str|None=None
     selected_operations: list[str]|None=None
 
+class TVCoverage(TVFolder):
+    tvdb_id: int=Field(gt=0)
+    season: int=Field(ge=0)
+    episode: int=Field(ge=1)
+    action: str
+    file: str=''
+
 class TVDisplayImage(TVFolder):
     name: str=""
 
@@ -97,6 +105,7 @@ def install_tv(app,m):
         return ctx
     def init():
         with db() as connection:
+            connection.execute('CREATE TABLE IF NOT EXISTS tv_episode_coverage(path TEXT,series_id INTEGER,season INTEGER,episode INTEGER,action TEXT,file TEXT,PRIMARY KEY(path,series_id,season,episode))')
             connection.execute('CREATE TABLE IF NOT EXISTS tv_display_images(path TEXT PRIMARY KEY,name TEXT)')
             connection.execute('CREATE TABLE IF NOT EXISTS tv_scan_checkpoints(root TEXT,path TEXT,signature TEXT,PRIMARY KEY(root,path))')
             connection.execute('CREATE TABLE IF NOT EXISTS tv_library(path TEXT PRIMARY KEY,data TEXT)')
@@ -134,6 +143,29 @@ def install_tv(app,m):
             for name in files:
                 file=Path(directory)/name;result[file.relative_to(folder).as_posix()]=file_signature(file)
         return result
+    def corrected_completeness(source,series_id,inv,episodes):
+        init()
+        with db() as connection:
+            rows=connection.execute('SELECT season,episode,action,file FROM tv_episode_coverage WHERE path=? AND series_id=?',(str(source),series_id)).fetchall()
+        corrections=[dict(zip(('season','episode','action','file'),row)) for row in rows]
+        return coverage(inv,episodes,corrections,completeness)
+
+    @app.post('/api/tv/episode-coverage')
+    def episode_coverage(req:TVCoverage,request:Request):
+        m.require_unlocked(request)
+        if m.library_read_only():raise HTTPException(403,'Library is read-only.')
+        if req.action not in {'automatic','ignore','link'}:raise HTTPException(400,'Choose automatic detection, ignore, or an existing file.')
+        init();source,_=folder_pair(req.folder);remote=bundle(req.tvdb_id,'official')
+        if not remote or not any(e.get('seasonNumber')==req.season and e.get('number')==req.episode for e in remote['episodes']):raise HTTPException(400,'Refresh this show from TVDB before correcting episode coverage.')
+        inv=inventory(source,m.VIDEO_EXTENSIONS)
+        if req.action=='link' and req.file not in {e['file'] for e in inv['episodes']}|set(inv['unrecognized']):raise HTTPException(400,'Choose an existing episode video in this show.')
+        with COMMIT_LOCK,db() as connection:
+            if req.action=='automatic':connection.execute('DELETE FROM tv_episode_coverage WHERE path=? AND series_id=? AND season=? AND episode=?',(str(source),req.tvdb_id,req.season,req.episode))
+            else:connection.execute('INSERT OR REPLACE INTO tv_episode_coverage VALUES (?,?,?,?,?,?)',(str(source),req.tvdb_id,req.season,req.episode,req.action,req.file if req.action=='link' else ''))
+            connection.execute('DELETE FROM tv_scan_checkpoints WHERE path=?',(str(source),))
+        record=refresh_index(req.folder)
+        return {'completeness':corrected_completeness(source,req.tvdb_id,inv,remote['episodes'])}
+
     def show_record(folder,probe=False,cancelled=None,progress=None):
         data=values(read_nfo(folder/'tvshow.nfo','tvshow'))
         inv=inventory(folder,m.VIDEO_EXTENSIONS,m.video_info if probe else None,cancelled,progress)
@@ -148,7 +180,7 @@ def install_tv(app,m):
         missing=[key for key in ('title','plot','year','certificate','genres','tvdb_id') if not data.get(key)]
         for key,prefix in [('poster','poster'),('fanart','fanart')]:
             if not any((folder/(prefix+suffix)).is_file() for suffix in ('.jpg','.png','.webp')):missing.append(key)
-        return {'folder':folder.name,'name':data.get('title') or folder.name,'metadata':data,'inventory':inv,'order':order,'tvdb_id':series_id,'has_nfo':bool(data),'missing_fields':missing,'status':'none' if not data else 'partial' if missing else 'complete','completeness':completeness(inv,remote['episodes']) if remote else None,'checked':remote.get('updated') if remote else None,'saved_assets':state}
+        return {'folder':folder.name,'name':data.get('title') or folder.name,'metadata':data,'inventory':inv,'order':order,'tvdb_id':series_id,'has_nfo':bool(data),'missing_fields':missing,'status':'none' if not data else 'partial' if missing else 'complete','completeness':corrected_completeness(folder,series_id,inv,remote['episodes']) if remote else None,'checked':remote.get('updated') if remote else None,'saved_assets':state}
     def refresh_index(name):
         init();source,_=folder_pair(name);record=show_record(source,True)
         with db() as connection:connection.execute('INSERT OR REPLACE INTO tv_library VALUES (?,?)',(str(source),json.dumps(record)))
@@ -360,7 +392,7 @@ def install_tv(app,m):
         existing=values(read_nfo(source/'tvshow.nfo','tvshow'))
         if str(req.tvdb_id)==existing.get('tvdb_id'):
             refresh_index(req.folder)
-        return {'bundle':data,'completeness':completeness(inventory(source,m.VIDEO_EXTENSIONS),data['episodes'])}
+        return {'bundle':data,'completeness':corrected_completeness(source,req.tvdb_id,inventory(source,m.VIDEO_EXTENSIONS),data['episodes'])}
     async def fanart_artwork(series_id:int,folder:str|None=None):
         cfg=m.load_config()
         if series_id<1:raise HTTPException(400,'Choose a TVDB series first.')
@@ -691,6 +723,9 @@ def install_tv(app,m):
                     connection.execute('UPDATE tv_backups SET folder=? WHERE folder=?',(str(folder_after),str(target)))
                     connection.execute('UPDATE tv_display_images SET path=? WHERE path=?',(str(p['source'].with_name(folder_after.name)),str(p['source'])))
                     connection.execute('DELETE FROM tv_library WHERE path=?',(str(p['source']),))
+            with db() as connection:
+                for before,after in p['renames'].items():connection.execute('UPDATE tv_episode_coverage SET file=? WHERE path=? AND file=?',(after,str(p['source']),before))
+                if folder_after!=target:connection.execute('UPDATE OR REPLACE tv_episode_coverage SET path=? WHERE path=?',(str(p['source'].with_name(folder_after.name)),str(p['source'])))
             refresh_index(folder_after.name)
         return {'folder':folder_after.name,'written':list(payload),'videos_preserved':True,'thumbnails':{**p['thumbnail_summary'],'downloaded':len(p['thumbnail_sources'])}}
     def reset_plan(name):

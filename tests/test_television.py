@@ -156,6 +156,30 @@ class TelevisionTests(unittest.TestCase):
         directory_issue=next(row for row in report['issues'] if 'Skipped directory' in row['reason'])
         self.assertEqual(bytes.fromhex(directory_issue['path_bytes_hex']),os.fsencode(bad_directory))
 
+    def test_manual_episode_coverage_is_persistent_reversible_and_checks_file(self):
+        headers=self.unlock();req={'folder':self.show.name,'tvdb_id':123,'season':1,'episode':2,'action':'link','file':'Season 01/Show.S01E01.mkv'}
+        self.assertEqual(self.client.post('/api/tv/episode-coverage',json=req).status_code,423)
+        result=self.client.post('/api/tv/episode-coverage',json=req,headers=headers);self.assertEqual(result.status_code,200,result.text)
+        self.assertEqual(result.json()['completeness']['counts']['missing'],0)
+        main.tv_services['scan']();record=self.client.post('/api/tv/inspect',json={'folder':self.show.name}).json();self.assertEqual(record['completeness']['counts']['missing'],0)
+        self.video.rename(self.season/'Moved.mkv');record=self.client.post('/api/tv/inspect',json={'folder':self.show.name}).json();self.assertEqual(record['completeness']['counts']['missing'],2)
+        self.assertEqual(self.client.post('/api/tv/episode-coverage',json=req,headers=headers).status_code,400)
+        (self.season/'Moved.mkv').rename(self.video)
+        result=self.client.post('/api/tv/episode-coverage',json={**req,'action':'ignore'},headers=headers);self.assertEqual(result.status_code,200,result.text)
+        counts=result.json()['completeness']['counts'];self.assertEqual(counts['missing'],0);self.assertEqual(counts['ignored'],1);self.assertEqual(counts['expected'],1)
+        result=self.client.post('/api/tv/episode-coverage',json={**req,'action':'automatic'},headers=headers);self.assertEqual(result.json()['completeness']['counts']['missing'],1)
+        self.assertEqual(self.video.read_bytes(),b'VIDEO MUST NEVER CHANGE')
+
+    def test_episode_link_follows_reviewed_video_and_folder_rename(self):
+        headers=self.unlock();req={'folder':self.show.name,'tvdb_id':123,'season':1,'episode':2,'action':'link','file':'Season 01/Show.S01E01.mkv'}
+        self.assertEqual(self.client.post('/api/tv/episode-coverage',json=req,headers=headers).status_code,200)
+        payload=self.approve(self.payload(rename_episodes=True,filename_format='{show} S{season}E{episode}',folder_name='Renamed Show'))
+        result=self.client.post('/api/tv/write',json=payload,headers=headers);self.assertEqual(result.status_code,200,result.text)
+        inspected=self.client.post('/api/tv/inspect',json={'folder':'Renamed Show'}).json();self.assertEqual(inspected['completeness']['counts']['missing'],0)
+        episode=next(e for e in inspected['completeness']['episodes'] if e['number']==2 and e['season']==1)
+        self.assertEqual(episode['included_in'],'Season 01/Example Show S01E01.mkv')
+        self.assertEqual((self.root/'Renamed Show'/episode['included_in']).read_bytes(),b'VIDEO MUST NEVER CHANGE')
+
     def test_scan_local_persistent_and_separate_from_movies(self):
         before={p.relative_to(self.show).as_posix():p.read_bytes() for p in self.show.rglob('*') if p.is_file()}
         with patch.object(main.tv_services['provider'],'get',new=AsyncMock(side_effect=AssertionError('Unexpected network'))):

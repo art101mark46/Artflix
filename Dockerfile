@@ -2,7 +2,7 @@ FROM python:3.12-slim
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 DATA_DIR=/config
 ARG ARTFLIX_BUILD=local
 ENV ARTFLIX_BUILD=$ARTFLIX_BUILD
-LABEL org.opencontainers.image.title="ArtFlix Movie Manager" org.opencontainers.image.version="0.4.3"
+LABEL org.opencontainers.image.title="ArtFlix Movie Manager" org.opencontainers.image.version="0.4.4"
 WORKDIR /app
 COPY requirements.txt .
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/* && pip install --no-cache-dir -r requirements.txt && useradd --uid 99 --gid 100 --no-create-home appuser

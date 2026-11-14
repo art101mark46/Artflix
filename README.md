@@ -380,3 +380,16 @@ filenames, the report also retains the exact original path bytes in hexadecimal
 so the intended file can be identified without guessing its encoding. Reports
 survive cancelled scans and restarts. Historical entries remain after corrections;
 scan again to check the corrected file. Collection begins with this release.
+
+### Joined episodes and ignored episodes (0.4.4)
+
+Unlock the padlock, open TV → Episodes and use the Episode availability selector
+on a missing episode. Choose the video that includes that episode, or Ignore
+ episode if it should not count toward completeness. Automatic detection removes
+an override. Linked episodes appear in Owned/All with their containing filename;
+ignored episodes remain visible in Ignored/All and are excluded from the target.
+Corrections persist in SQLite, separately for each folder and TVDB series ID.
+They survive scans and refreshes and follow renames performed through ArtFlix.
+A missing linked file invalidates its ownership claim when inspected or rescanned.
+These controls adjust ArtFlix's availability assessment only; they do not rewrite
+video files, episode NFOs, or external media players' episode numbering.

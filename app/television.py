@@ -103,7 +103,8 @@ def inventory(folder, extensions, probe=None, cancelled=None, progress=None):
     return {'episodes':episodes,'unrecognized':unrecognized,'extras':extras,'warnings':warnings,'issues':issues}
 
 
-def completeness(local, remote, include_specials=False, today=None):
+def completeness(local, remote, include_specials=False, today=None, ignored=None):
+    ignored=ignored or set()
     today=today or dt.date.today().isoformat()
     owned={tuple(n) for file in local['episodes'] for n in file['numbers']}
     unique={}
@@ -111,17 +112,17 @@ def completeness(local, remote, include_specials=False, today=None):
         s,e=episode.get('seasonNumber'),episode.get('number')
         if not isinstance(s,int) or not isinstance(e,int) or e<1 or s<0:continue
         unique[(s,e)]=episode
-    counts={'owned':0,'missing':0,'upcoming':0,'unknown':0,'specials':0};rows=[]
+    counts={'owned':0,'missing':0,'upcoming':0,'unknown':0,'specials':0,'ignored':0};rows=[]
     for (season,number),episode in sorted(unique.items()):
         aired=str(episode.get('aired') or '')[:10]
         try:dt.date.fromisoformat(aired)
         except ValueError:aired=''
         present=(season,number) in owned
-        status='owned' if present else 'unknown' if not aired else 'upcoming' if aired>today else 'missing'
+        status='ignored' if (season,number) in ignored else 'owned' if present else 'unknown' if not aired else 'upcoming' if aired>today else 'missing'
         if season==0 and not include_specials:counts['specials']+=1
         else:counts[status]+=1
         rows.append({'season':season,'number':number,'id':episode.get('id'),'title':episode.get('name') or '', 'aired':aired,'status':status,'special':season==0})
-    expected=sum(1 for row in rows if (include_specials or not row['special']) and row['aired'] and row['aired']<=today)
+    expected=sum(1 for row in rows if (include_specials or not row['special']) and row['aired'] and row['aired']<=today and row['status']!='ignored')
     owned_aired=sum(1 for row in rows if (include_specials or not row['special']) and row['aired'] and row['aired']<=today and row['status']=='owned')
     counts.update(expected=expected,owned_aired=owned_aired,percent=round(100*owned_aired/expected) if expected else None)
     return {'counts':counts,'episodes':rows,'local_only':[list(n) for n in sorted(owned-set(unique))]}

@@ -36,3 +36,5 @@ header{width:100%;padding:18px clamp(12px,2vw,32px);display:flex;align-items:cen
 html[data-theme="dark"] #settings-form>.actions{background:#1b2834}
 .settings-tabs [aria-selected="false"]{background:#e7edf2;color:#26394b}html[data-theme="dark"] .settings-tabs [aria-selected="false"]{background:#334858;color:#e0e8ef}.settings-tabs [aria-selected="true"]{background:#176ba3;color:#fff;box-shadow:inset 0 -3px 0 #8ac8ef}
 .art-selection-controls{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.movie-save-bar,.tv-save{margin-top:18px;padding-top:14px;border-top:1px solid #71809166}.movie-save-bar button,.tv-save button{margin-right:8px}
+/* Library cards must never shrink their text to fit the scroll container. */
+.movie-list{display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden}.movie-list>.movie-item{flex:0 0 auto;height:auto;min-height:0;white-space:normal;overflow-wrap:anywhere;padding-top:12px;padding-bottom:12px}.movie-item small{white-space:normal}.episode-coverage{grid-column:1/-1;min-width:0}.episode-coverage select{width:100%;min-width:0}.tv-episode.ignored{border-left-color:#8295a3}.tv-episode>span{min-width:0;overflow-wrap:anywhere}
