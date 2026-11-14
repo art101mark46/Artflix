@@ -1,0 +1,45 @@
+# Uses the image loaded with: docker load -i /tmp/artflix-unraid.tar
+# Set the two existing share paths in .env before starting.
+services:
+  artflix:
+    image: artflix:0.4.0
+    pull_policy: never
+    container_name: artflix
+    restart: unless-stopped
+    ports:
+      - "${ARTFLIX_PORT:-8787}:8000"
+    environment:
+      DATA_DIR: /config
+      ARTFLIX_READ_ONLY: "true"
+    volumes:
+      - type: bind
+        source: /mnt/user/appdata/artflix
+        target: /config
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ARTFLIX_MOVIES_PATH:?Set ARTFLIX_MOVIES_PATH in .env}
+        target: /movies
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ARTFLIX_MOVIES_PATH:?Set ARTFLIX_MOVIES_PATH in .env}
+        target: /movies-write
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ARTFLIX_TV_PATH:?Set ARTFLIX_TV_PATH in .env}
+        target: /tv
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${ARTFLIX_TV_PATH:?Set ARTFLIX_TV_PATH in .env}
+        target: /tv-write
+        read_only: true
+        bind:
+          create_host_path: false
+    labels:
+      net.unraid.docker.webui: "http://[IP]:[PORT:8000]/"

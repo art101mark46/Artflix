@@ -1,0 +1,8 @@
+# Apply with: docker compose -f docker-compose.yml -f docker-compose.readonly.yml up -d --build
+services:
+  movie-metadata:
+    environment:
+      ARTFLIX_READ_ONLY: "true"
+    volumes:
+      - ${ARTFLIX_MOVIES_PATH:-/mnt/user/Movies}:/movies:ro
+      - ${ARTFLIX_MOVIES_PATH:-/mnt/user/Movies}:/movies-write:ro

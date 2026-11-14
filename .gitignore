@@ -1,0 +1,22 @@
+# Private runtime state, libraries, credentials and local tooling
+/config/
+/work/
+/outputs/
+/demo-tv/
+/.agents/
+/.aws/
+/.codex/
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.tar
+*.tar.gz
+*.zip
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store

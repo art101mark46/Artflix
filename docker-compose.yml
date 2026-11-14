@@ -1,0 +1,19 @@
+services:
+  movie-metadata:
+    build: .
+    container_name: movie-metadata
+    ports:
+      - "8787:8000"
+    environment:
+      DATA_DIR: /config
+    volumes:
+      - ./config:/config
+      - ${ARTFLIX_MOVIES_PATH:-/mnt/user/Movies}:/movies:ro
+      - ${ARTFLIX_MOVIES_PATH:-/mnt/user/Movies}:/movies-write:rw
+      # Optional TV share; set ARTFLIX_TV_PATH before enabling TV management.
+      - ${ARTFLIX_TV_PATH:-./demo-tv}:/tv:ro
+      - ${ARTFLIX_TV_PATH:-./demo-tv}:/tv-write:ro
+    labels:
+      net.unraid.docker.icon: "${ARTFLIX_ICON_URL:-http://127.0.0.1:8787/static/branding/artflix-icon.png}"
+      net.unraid.docker.webui: "http://[IP]:[PORT:8000]/"
+    restart: unless-stopped

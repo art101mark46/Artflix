@@ -1,0 +1,15 @@
+<?xml version='1.0' encoding='utf-8'?>
+<Container>
+  <Name>ArtFlix Movie Manager</Name>
+  <Repository>ghcr.io/art101mark46/artflix:latest</Repository>
+  <Network>bridge</Network>
+  <Icon>http://UNRAID-IP:8787/static/branding/artflix-icon.png</Icon>
+  <WebUI>http://[IP]:[PORT:8000]/</WebUI>
+  <Config Name="Web UI Port" Target="8000" Default="8787" Mode="tcp" Description="Web interface port" Type="Port" Display="always" Required="true" Mask="false">8787</Config>
+  <Config Name="Application Config" Target="/config" Default="" Mode="rw" Description="Persistent application settings and API keys" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/artflix</Config>
+  <Config Name="Movie Library Read Only" Target="/movies" Default="" Mode="ro" Description="Movie root for scanning and metadata lookup" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/Movies</Config>
+  <Config Name="Movie library metadata path" Target="/movies-write" Default="" Mode="ro" Description="Read-only for initial deployment. Change to Read/Write only when enabling approved library edits." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/Movies</Config>
+  <Config Name="Read-only library mode" Target="ARTFLIX_READ_ONLY" Default="true" Mode="" Description="Leave true for the initial scan. To allow saving, set false and change /movies-write to Read/Write." Type="Variable" Display="always" Required="true" Mask="false">true</Config>
+  <Config Name="TV library scan path" Target="/tv" Default="" Mode="ro" Description="Optional TV share. One folder per show." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/TV</Config>
+  <Config Name="TV library metadata path" Target="/tv-write" Default="" Mode="ro" Description="Keep read-only initially. Change to Read/Write only when enabling approved TV edits." Type="Path" Display="always" Required="false" Mask="false">/mnt/user/TV</Config>
+</Container>
