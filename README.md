@@ -393,3 +393,11 @@ They survive scans and refreshes and follow renames performed through ArtFlix.
 A missing linked file invalidates its ownership claim when inspected or rescanned.
 These controls adjust ArtFlix's availability assessment only; they do not rewrite
 video files, episode NFOs, or external media players' episode numbering.
+
+### Dismiss scan banners (0.4.6)
+
+After a movie/TV scan stops, use the × at the right of its banner to hide it.
+The current browser remembers dismissal for that scan, so refreshes and library
+switches do not bring it back. A new scan opens a new banner automatically.
+Active scans retain the Cancel scan button; dismissal never cancels a scan or
+clears library data, warning reports or resume checkpoints.

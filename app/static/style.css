@@ -38,3 +38,5 @@ html[data-theme="dark"] #settings-form>.actions{background:#1b2834}
 .art-selection-controls{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}.movie-save-bar,.tv-save{margin-top:18px;padding-top:14px;border-top:1px solid #71809166}.movie-save-bar button,.tv-save button{margin-right:8px}
 /* Library cards must never shrink their text to fit the scroll container. */
 .movie-list{display:flex;flex-direction:column;overflow-y:auto;overflow-x:hidden}.movie-list>.movie-item{flex:0 0 auto;height:auto;min-height:0;white-space:normal;overflow-wrap:anywhere;padding-top:12px;padding-bottom:12px}.movie-item small{white-space:normal}.episode-coverage{grid-column:1/-1;min-width:0}.episode-coverage select{width:100%;min-width:0}.tv-episode.ignored{border-left-color:#8295a3}.tv-episode>span{min-width:0;overflow-wrap:anywhere}
+
+.scan-progress-actions{display:flex;align-items:center;gap:10px;flex-shrink:0}#scan-dismiss{font-size:1.3rem;line-height:1;padding:7px 10px}

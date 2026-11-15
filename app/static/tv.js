@@ -38,7 +38,7 @@ async function scanTV(){try{$('#scan').disabled=true;await api('/api/tv/scan/sta
 const tvScanDetails=document.createElement('details');tvScanDetails.id='tv-scan-details';tvScanDetails.hidden=true;tvScanDetails.innerHTML='<summary>Episode scan progress</summary><p id="tv-scan-phase"></p><p id="tv-scan-file" class="muted"></p><progress id="tv-file-meter" max="1" value="0"></progress><p id="tv-scan-counts"></p><p id="tv-scan-checkpoint" class="muted"></p>';$('#scan-errors').before(tvScanDetails);
 function renderTVScanProgress(job){
  const active=['running','cancelling'].includes(job.state),counting=job.phase==='counting'&&active,done=job.files_done||0,total=job.files_total||0;
- scanProgress.hidden=false;tvScanDetails.hidden=false;$('#scan').disabled=active;$('#scan').textContent=!active&&job.resume_available?'Resume scan':'Scan';
+ showScanBanner(job,'tv');tvScanDetails.hidden=false;$('#scan').disabled=active;$('#scan').textContent=!active&&job.resume_available?'Resume scan':'Scan';
  $('#scan-summary').textContent=counting?`Counting TV files: ${job.counted_shows||0}/${job.total||0} folders · ${total} video files found`:`TV scan: ${job.checked||0}/${job.total||0} folders · ${done}/${total} video files · ${job.errors||0} warnings`;
  $('#scan-meter').max=job.total||1;if(counting)$('#scan-meter').removeAttribute('value');else $('#scan-meter').value=job.checked||0;
  $('#scan-current').textContent=job.current||job.error||'';

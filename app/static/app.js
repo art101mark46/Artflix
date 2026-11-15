@@ -459,12 +459,28 @@ async function reviewedWrite(payload){
  return api('/api/write',{method:'POST',body:JSON.stringify({...payload,review_token:plan.review_token,selected_operations:plan.selected_operations})});
 }
 
-const scanProgress=document.createElement('section');scanProgress.className='scan-progress';scanProgress.hidden=true;scanProgress.innerHTML='<div class="scan-progress-head"><strong id="scan-summary">Scanning</strong><button type="button" class="secondary" id="scan-cancel">Cancel scan</button></div><progress id="scan-meter" value="0" max="1"></progress><p id="scan-current" class="muted"></p><details id="scan-errors" hidden><summary>Scan warnings</summary><a href="/api/scan/issues/download" download>Download full scan report</a><ul></ul></details>';$('main').prepend(scanProgress);
+const scanProgress=document.createElement('section');scanProgress.className='scan-progress';scanProgress.hidden=true;scanProgress.innerHTML='<div class="scan-progress-head"><strong id="scan-summary">Scanning</strong><div class="scan-progress-actions"><button type="button" class="secondary" id="scan-cancel">Cancel scan</button><button type="button" id="scan-dismiss" class="icon-button" aria-label="Dismiss scan banner" title="Dismiss scan banner" hidden>×</button></div></div><progress id="scan-meter" value="0" max="1"></progress><p id="scan-current" class="muted"></p><details id="scan-errors" hidden><summary>Scan warnings</summary><a href="/api/scan/issues/download" download>Download full scan report</a><ul></ul></details>';$('main').prepend(scanProgress);
+let displayedScan=null;
+const dismissedScans={};
+function showScanBanner(job,library){
+ const active=['running','cancelling'].includes(job.state),id=String(job.id||job.started||'legacy');
+ const key='artflix-dismissed-scan-'+library;
+ if(!(library in dismissedScans)){try{dismissedScans[library]=localStorage.getItem(key)}catch{dismissedScans[library]=null}}
+ displayedScan={library,id,active};
+ scanProgress.hidden=job.state==='idle'||(!active&&dismissedScans[library]===id);
+ $('#scan-dismiss').hidden=active||job.state==='idle';
+}
+$('#scan-dismiss').onclick=()=>{
+ if(!displayedScan||displayedScan.active)return;
+ const {library,id}=displayedScan;dismissedScans[library]=id;
+ try{localStorage.setItem('artflix-dismissed-scan-'+library,id)}catch{}
+ scanProgress.hidden=true;
+};
 $('#scan-cancel').onclick=async()=>{try{await api('/api/scan/cancel',{method:'POST'});$('#scan-cancel').disabled=true;$('#scan-current').textContent='Stopping after the current file…'}catch(e){setLibraryStatus(e.message)}};
 async function pollScan(){
  clearTimeout(scanPollTimer);
  try{
-  const job=await api('/api/scan/status'),active=['running','cancelling'].includes(job.state);if(typeof libraryMode!=='undefined'&&libraryMode!=='movies'){if(active)scanPollTimer=setTimeout(pollScan,1000);else await reloadLibrary();return}scanProgress.hidden=false;if($('#tv-scan-details'))$('#tv-scan-details').hidden=true;$('#scan').disabled=active;$('#scan-cancel').hidden=!active;$('#scan-cancel').disabled=job.state==='cancelling';
+  const job=await api('/api/scan/status'),active=['running','cancelling'].includes(job.state);if(typeof libraryMode!=='undefined'&&libraryMode!=='movies'){if(active)scanPollTimer=setTimeout(pollScan,1000);else await reloadLibrary();return}showScanBanner(job,'movies');if($('#tv-scan-details'))$('#tv-scan-details').hidden=true;$('#scan').disabled=active;$('#scan-cancel').hidden=!active;$('#scan-cancel').disabled=job.state==='cancelling';
   $('#scan-meter').max=job.total||1;$('#scan-meter').value=job.checked||0;
   $('#scan-summary').textContent=`${job.checked||0} / ${job.total||0} folders · ${job.found||0} movies · ${job.new||0} new · ${job.errors||0} errors · ${Math.floor((job.elapsed||0)/60)}m ${Math.floor((job.elapsed||0)%60)}s`;
   $('#scan-current').textContent=job.state==='cancelling'?'Stopping after the current file…':job.current||'';
