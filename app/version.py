@@ -1,3 +1,3 @@
 import os
-VERSION = '0.4.6'
+VERSION = '0.4.7'
 BUILD = os.getenv('ARTFLIX_BUILD', 'local')

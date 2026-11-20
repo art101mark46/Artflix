@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 
 
-def rename_no_replace(source: Path, destination: Path) -> None:
+def _atomic_rename_no_replace(source: Path, destination: Path) -> None:
     """Linux atomic no-clobber rename. Fail closed when unsupported."""
     libc = ctypes.CDLL(None, use_errno=True)
     rename = getattr(libc, 'renameat2', None)
@@ -16,6 +16,37 @@ def rename_no_replace(source: Path, destination: Path) -> None:
     if rename(-100, os.fsencode(source), -100, os.fsencode(destination), 1) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error), str(destination))
+
+
+def rename_no_replace(source: Path, destination: Path) -> None:
+    """No-clobber rename, with a hard-link fallback for regular files on FUSE.
+
+    Linking never copies video bytes and refuses any existing destination. If
+    interrupted between link and unlink, both names retain the same intact file.
+    Directories require the protected atomic operation; never emulate it with an
+    existence check followed by an ordinary, potentially clobbering rename.
+    """
+    import stat
+    try:
+        _atomic_rename_no_replace(source, destination)
+        return
+    except OSError as error:
+        if error.errno not in {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP}:
+            raise
+    if not stat.S_ISREG(source.lstat().st_mode):
+        raise OSError(errno.EOPNOTSUPP,
+                      'This share does not support protected folder renames. '
+                      'Rename the folder manually, then scan again', str(destination))
+    try:
+        os.link(source, destination, follow_symlinks=False)
+    except OSError as error:
+        if error.errno in {errno.EINVAL, errno.ENOSYS, errno.EOPNOTSUPP, errno.EPERM, errno.EXDEV}:
+            raise OSError(errno.EOPNOTSUPP,
+                          'This share supports neither protected renames nor hard links. '
+                          'The original file was kept; rename it manually, then scan again',
+                          str(destination)) from error
+        raise
+    source.unlink()
 
 
 def rename_media_files(folder: Path, mapping: dict[str, str]) -> None:
@@ -44,7 +75,7 @@ def publish_metadata_no_replace(source: Path, destination: Path) -> None:
     """Publish a finished metadata temp file, retaining exclusive creation on FUSE.
 
     This compatibility path is deliberately unavailable to videos, subtitles and
-    directories. Media moves must still use atomic RENAME_NOREPLACE.
+    directories. Media moves may use protected renames or hard links, but never copying.
     """
     import shutil
     import stat

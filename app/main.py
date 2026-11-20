@@ -935,7 +935,7 @@ async def write_metadata(req: WriteRequest, request: Request):
             try:
                 rename_media_files(target, plan['renames'])
             except OSError as error:
-                raise HTTPException(409, f'Metadata was saved but renaming could not finish without overwriting a path: {error}')
+                raise HTTPException(409, f'Metadata was saved but file renaming could not finish safely: {error}')
         state = read_asset_state(target)
         state['artwork'] = {**state.get('artwork', {}), **plan['art']}
         save_asset_state(target, state)
