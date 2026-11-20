@@ -1,6 +1,7 @@
 const $ = (s) => document.querySelector(s);
 let editToken=null;
 let healthFilter=null;
+let newMoviesOnly=false;
 let duplicateGroups=new Map();
 let scanPollTimer=null;
 let selectionVersion=0;
@@ -33,9 +34,10 @@ async function scan(){
 function setLibraryStatus(message){const status=$('#library-status');status.textContent=message;status.hidden=!message;}
 function renderMovies() {
   refreshHealthDashboard();
+  renderNewMovieControls();
   visibleMovieRows=movies.map((movie,index)=>({movie,index})).filter(row=>matchesLibraryFilters(row.movie)).sort((a,b)=>compareMovies(a.movie,b.movie));
   $('#movies-heading').textContent=`Movies (${visibleMovieRows.length})`;
-  $('#movie-list').innerHTML=visibleMovieRows.length?visibleMovieRows.map(({movie:m,index:i})=>`<button class="movie-item ${movieCompleteness(m).status} ${current?.folder===m.folder?'active':''}" title="${esc(movieCompleteness(m).label)}" aria-label="${esc(m.name+'. '+movieCompleteness(m).label)}" data-index="${i}">${!m.has_nfo?'<span class="new-star" title="New movie">★</span>':''}${esc(m.name)}${missingMovieSummary(m)}</button>`).join(''):movies.length?'<p class="muted">No movies match these filters.</p>':'<p class="muted">No movie files found. Check the configured scan path.</p>';
+  $('#movie-list').innerHTML=visibleMovieRows.length?visibleMovieRows.map(({movie:m,index:i})=>`<button class="movie-item ${movieCompleteness(m).status} ${m.is_new?'newly-discovered':''} ${current?.folder===m.folder?'active':''}" title="${esc(movieCompleteness(m).label)}" aria-label="${esc(m.name+'. '+movieCompleteness(m).label)}" data-index="${i}">${m.is_new?'<span class="new-star" title="Newly discovered movie">★</span><span class="new-movie-label">New</span>':!m.has_nfo?'<span class="new-star" title="No metadata">★</span>':''}${esc(m.name)}${missingMovieSummary(m)}</button>`).join(''):movies.length?'<p class="muted">No movies match these filters.</p>':'<p class="muted">No movie files found. Check the configured scan path.</p>';
   document.querySelectorAll('.movie-item').forEach(b=>b.onclick=()=>selectMovie(movies[+b.dataset.index]));
   updateAlphabet();
 }
@@ -48,7 +50,7 @@ function resetMovieFilePanel(){
 async function selectMovie(m) {
   const version=++selectionVersion;
   resetMovieFilePanel();
-  resetLibraryFilters();
+  resetLibraryFilters(true);
   $("#search-form").hidden=false;
   showWorkspaceTab("movie");
   current=m; chosenMovie=null; inspectData=null;
@@ -200,7 +202,7 @@ function showWorkspaceTab(tab){const movie=tab==='movie';moviePanel.hidden=!movi
 $('#movie-tab').onclick=()=>showWorkspaceTab('movie');$('#search-tab').onclick=()=>showWorkspaceTab('search');
 workspaceTabs.onkeydown=e=>{if(['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){e.preventDefault();const search=e.key==='End'||(e.key!=='Home'&&document.activeElement===$('#movie-tab'));showWorkspaceTab(search?'search':'movie');$(search?'#search-tab':'#movie-tab').focus()}};
 filterPanel.querySelectorAll('[data-filter]').forEach(input=>input.oninput=()=>{if(input.dataset.filter==='set')setExact=false;libraryFilters[input.dataset.filter]=input.value;renderMovies();updateFilterCount()});
-function resetLibraryFilters(){healthFilter=null;setExact=false;filterPanel.querySelectorAll('[data-filter]').forEach(i=>i.value='');filterPanel.querySelectorAll('[data-missing]').forEach(i=>i.checked=false);missingSelection.clear();$('#missing-mode').value='any';Object.keys(libraryFilters).forEach(k=>delete libraryFilters[k]);renderMovies();updateFilterCount()}
+function resetLibraryFilters(keepNew=false){if(keepNew!==true)newMoviesOnly=false;healthFilter=null;setExact=false;filterPanel.querySelectorAll('[data-filter]').forEach(i=>i.value='');filterPanel.querySelectorAll('[data-missing]').forEach(i=>i.checked=false);missingSelection.clear();$('#missing-mode').value='any';Object.keys(libraryFilters).forEach(k=>delete libraryFilters[k]);renderMovies();updateFilterCount()}
 $('#clear-filters').onclick=resetLibraryFilters;
 function updateFilterCount(){const count=movies.filter(m=>matchesLibraryFilters(m)).length;$('#filter-count').textContent=`${count} of ${movies.length} movies match`;}
 function refreshFilterSuggestions(){
@@ -352,6 +354,7 @@ const missingLabels={nfo:'NFO file (missing or unreadable)',title:'Title',origin
 const missingPanel=document.createElement('fieldset');missingPanel.className='missing-fields';missingPanel.innerHTML='<legend>Find missing fields</legend><p class="muted">Select the fields to check. Blank values count as missing. Optional items such as subtitles are checked only when you select them.</p><label>Match <select id="missing-mode"><option value="any">Any selected field is missing</option><option value="all">All selected fields are missing</option></select></label><div class="missing-grid">'+Object.entries(missingLabels).map(([key,label])=>`<label class="check"><input type="checkbox" data-missing="${key}">${esc(label)}</label>`).join('')+'</div>';
 $('#filter-count').before(missingPanel);
 function matchesLibraryFilters(movie){
+ if(newMoviesOnly&&!movie.is_new)return false;
  if(healthFilter&&!matchesHealth(movie,healthFilter))return false;
  if(!Object.entries(libraryFilters).every(([key,value])=>!value||(key==='set'&&setExact?filterValue(movie,key).toLowerCase()===value.toLowerCase():filterValue(movie,key).toLowerCase().includes(value.toLowerCase()))))return false;
  if(!missingSelection.size)return true;
@@ -482,10 +485,10 @@ async function pollScan(){
  try{
   const job=await api('/api/scan/status'),active=['running','cancelling'].includes(job.state);if(typeof libraryMode!=='undefined'&&libraryMode!=='movies'){if(active)scanPollTimer=setTimeout(pollScan,1000);else await reloadLibrary();return}showScanBanner(job,'movies');if($('#tv-scan-details'))$('#tv-scan-details').hidden=true;$('#scan').disabled=active;$('#scan-cancel').hidden=!active;$('#scan-cancel').disabled=job.state==='cancelling';
   $('#scan-meter').max=job.total||1;$('#scan-meter').value=job.checked||0;
-  $('#scan-summary').textContent=`${job.checked||0} / ${job.total||0} folders · ${job.found||0} movies · ${job.new||0} new · ${job.errors||0} errors · ${Math.floor((job.elapsed||0)/60)}m ${Math.floor((job.elapsed||0)%60)}s`;
+  $('#scan-summary').textContent=`${job.checked||0} / ${job.total||0} folders · ${job.found||0} movies · ${job.new||0} new · ${job.reused||0} unchanged · ${job.updated||0} updated · ${job.errors||0} errors · ${Math.floor((job.elapsed||0)/60)}m ${Math.floor((job.elapsed||0)%60)}s`;
   $('#scan-current').textContent=job.state==='cancelling'?'Stopping after the current file…':job.current||'';
   $('#scan-errors').hidden=!(job.warnings?.length||job.error);$('#scan-errors ul').innerHTML=(job.warnings||[]).map(w=>`<li>${esc(w.folder)}: ${esc(w.error)}</li>`).join('')+(job.error?`<li>${esc(job.error)}</li>`:'');
-  if(active){scanPollTimer=setTimeout(pollScan,1000)}else{await reloadLibrary();setLibraryStatus(job.state==='failed'?'Scan failed: '+job.error:job.state==='cancelled'?'Scan cancelled. Previously indexed movies are retained.':`Scan complete: ${job.new||0} new movies, ${job.errors||0} errors.`);$('#scan-current').textContent=job.state==='completed'?'Finished':job.state;}
+  if(active){scanPollTimer=setTimeout(pollScan,1000)}else{await reloadLibrary();setLibraryStatus(job.state==='failed'?'Scan failed: '+job.error:job.state==='cancelled'?'Scan cancelled. Previously indexed movies are retained.':`Scan complete: ${job.new||0} new, ${job.reused||0} unchanged, ${job.updated||0} updated, ${job.errors||0} errors.`);$('#scan-current').textContent=job.state==='completed'?'Finished':job.state;}
  }catch(e){setLibraryStatus('Unable to read scan progress: '+e.message);$('#scan').disabled=false}
 }
 
@@ -581,7 +584,7 @@ $('#nfo-sample-check').onclick=async()=>{const button=$('#nfo-sample-check');but
 function showSettingsTab(key){
  const buttons=[...document.querySelectorAll('[data-settings-tab]')];
  buttons.forEach(button=>{const active=button.dataset.settingsTab===key;button.setAttribute('aria-selected',String(active));button.tabIndex=active?0:-1;document.getElementById(button.getAttribute('aria-controls')).hidden=!active});
- if(key==='about'){loadSystemSummary();if(editToken)loadConfigBackups();else $('#config-backup-status').textContent='Unlock editing to create or download private backups.'}
+ if(key==='about'){loadFolderRenames();loadSystemSummary();if(editToken)loadConfigBackups();else $('#config-backup-status').textContent='Unlock editing to create or download private backups.'}
 }
 const settingsTabs=[...document.querySelectorAll('[data-settings-tab]')];
 settingsTabs.forEach((button,index)=>{button.onclick=()=>showSettingsTab(button.dataset.settingsTab);button.onkeydown=e=>{let next;if(e.key==='ArrowRight')next=(index+1)%settingsTabs.length;if(e.key==='ArrowLeft')next=(index+settingsTabs.length-1)%settingsTabs.length;if(e.key==='Home')next=0;if(e.key==='End')next=settingsTabs.length-1;if(next!==undefined){e.preventDefault();showSettingsTab(settingsTabs[next].dataset.settingsTab);settingsTabs[next].focus()}}});
@@ -607,3 +610,27 @@ function bindMovieArtworkSelection(){document.querySelectorAll('[data-art]').for
 
 const issuesPanel=document.createElement('section');issuesPanel.className='maintenance-panel';issuesPanel.innerHTML='<h3>Skipped files and scan warnings</h3><p>Saved across restarts for movies and TV. Historical entries remain after files are corrected.</p><button type="button" id="scan-issues-load" class="secondary">Show scan warnings</button> <a href="/api/scan/issues/download" download>Download full report</a><div id="scan-issues-results" role="status"></div>';$('#settings-panel-about').append(issuesPanel);
 $('#scan-issues-load').onclick=async()=>{try{const d=await api('/api/scan/issues');$('#scan-issues-results').innerHTML=`<p>${d.total} recorded ${d.total===1?'warning':'warnings'}. Showing the newest ${d.issues.length}.</p>`+d.issues.map(row=>`<article class="media-info"><strong>${esc(row.library==='tv'?'TV Shows':'Movies')} · ${esc(new Date(row.time).toLocaleString())}</strong><span>${esc(row.path)}</span><span>${esc(row.reason)}</span></article>`).join('')}catch(e){$('#scan-issues-results').textContent=e.message}};
+
+
+// Discovery is independent of metadata completeness and persists in SQLite.
+const newMovieControls=document.createElement('div');newMovieControls.className='new-movie-controls';
+newMovieControls.innerHTML='<button type="button" id="new-movies-filter" class="secondary" aria-pressed="false" title="Show newly discovered movies">★ New (0)</button><button type="button" id="new-movies-seen" class="secondary" title="Clear the New highlights for all movies">Mark all seen</button>';
+$('#library-status').before(newMovieControls);
+function renderNewMovieControls(){
+ if(!document.getElementById('new-movies-filter'))return;
+ const count=movies.filter(m=>m.is_new).length;
+ $('#new-movies-filter').textContent=`★ New (${count})`;$('#new-movies-filter').setAttribute('aria-pressed',String(newMoviesOnly));$('#new-movies-seen').disabled=!count;
+}
+$('#new-movies-filter').onclick=()=>{newMoviesOnly=!newMoviesOnly;renderMovies();updateFilterCount()};
+$('#new-movies-seen').onclick=async()=>{try{await api('/api/library/mark-seen',{method:'POST',body:'{}'});newMoviesOnly=false;await reloadLibrary()}catch(e){setLibraryStatus(e.message)}};
+
+const renameRecoveryPanel=document.createElement('section');renameRecoveryPanel.className='maintenance-panel';
+renameRecoveryPanel.innerHTML='<h3>Folder rename recovery</h3><p>Interrupted folder renames keep the video data intact. Finish a pending rename before scanning or making other changes. Cancellation is available while all original names are still present.</p><button type="button" id="folder-renames-refresh" class="secondary">Check pending renames</button><div id="folder-renames-list" role="status"></div>';
+$('#settings-panel-about').append(renameRecoveryPanel);
+$('#folder-renames-refresh').onclick=loadFolderRenames;
+async function loadFolderRenames(){
+ const list=$('#folder-renames-list');
+ try{const {renames}=await api('/api/folder-renames');list.innerHTML=renames.map(r=>`<div class="rename-recovery-row"><strong>${esc(r.source)} → ${esc(r.destination)}</strong><button type="button" data-recover-rename="${r.id}">Finish rename</button>${r.can_cancel?`<button type="button" class="secondary" data-cancel-rename="${r.id}">Cancel rename</button>`:''}</div>`).join('')||'<p>No pending folder renames.</p>';
+ list.querySelectorAll('[data-recover-rename],[data-cancel-rename]').forEach(button=>button.onclick=async()=>{button.disabled=true;try{await api('/api/folder-renames/recover',{method:'POST',body:JSON.stringify({id:button.dataset.recoverRename||button.dataset.cancelRename,cancel:!!button.dataset.cancelRename})});await reloadLibrary();if(typeof loadTV==='function')await loadTV();await loadFolderRenames()}catch(e){window.alert(e.message);button.disabled=false}});
+ }catch(e){list.textContent=e.message}
+}

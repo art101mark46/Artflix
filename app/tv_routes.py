@@ -20,6 +20,7 @@ from app.scan_issues import ScanWarnings
 from app.encoding import valid_filename,display_filename
 from app.control import COMMIT_LOCK, fingerprint
 from app.filesystem import rename_media_files, rename_no_replace, publish_metadata_no_replace
+from app.folder_rename import PendingFolderRename
 from app.operations import file_signature
 from app.tv_artwork import tvdb_choices, tmdb_choices
 from app.television import TVDB, completeness, inventory, read_nfo, values, serialize_nfo, safe_image, tv_language, normalize_credits, tv_cast, tvdb_image_url, normalize_episode_images, season_artwork_layout
@@ -186,6 +187,7 @@ def install_tv(app,m):
         with db() as connection:connection.execute('INSERT OR REPLACE INTO tv_library VALUES (?,?)',(str(source),json.dumps(record)))
         return record
     def scan(progress=None,cancelled=None):
+        m.ensure_no_pending_folder_rename()
         init();root,_=roots();progress=progress or (lambda **kw:None);cancelled=cancelled or (lambda:False)
         folders=sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink() and not p.name.startswith('.')),key=lambda p:p.name.casefold())
         seen=set();warnings=ScanWarnings(db,"tv",root);found=0;new=0;files_done=0;reused=0;plans={}
@@ -282,7 +284,9 @@ def install_tv(app,m):
         shows=[json.loads(data) for path,data in rows if Path(path).parent==root]
         return {'shows':shows,'root':str(root),'configured':bool(cfg.get('tv_root_path') and cfg.get('tv_write_path'))}
     @app.post('/api/tv/scan/start')
-    def tv_scan_start():roots();return jobs.start(scan)
+    def tv_scan_start():
+        with COMMIT_LOCK:
+            m.ensure_no_pending_folder_rename();roots();return jobs.start(scan)
     @app.get('/api/tv/scan/status')
     def tv_scan_status():return jobs.status()
     @app.post('/api/tv/scan/cancel')
@@ -709,8 +713,10 @@ def install_tv(app,m):
                     if not state_existed:created.append('.artflix-tv.json')
                 finally:
                     if os.path.exists(state_temp):os.unlink(state_temp)
-                if p['folder_name']!=target.name:folder_after=target.with_name(p['folder_name']);rename_no_replace(target,folder_after)
+                if p['folder_name']!=target.name:
+                    folder_after=target.with_name(p['folder_name']);m.move_library_folder(target,folder_after,'tv')
             except Exception as error:
+                if isinstance(error,PendingFolderRename): raise HTTPException(409,str(error)) from error
                 # Videos are only moved; roll moves back without overwriting anything.
                 for name in created:
                     file=target/name
@@ -794,4 +800,4 @@ def install_tv(app,m):
                 if os.path.exists(temp):os.unlink(temp)
             refresh_index(req.folder)
         return {'restored':file.name}
-    return {'jobs':jobs,'scan':scan,'provider':provider,'roots':roots}
+    return {'jobs':jobs,'scan':scan,'provider':provider,'roots':roots,'refresh_index':refresh_index}

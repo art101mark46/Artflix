@@ -30,6 +30,31 @@ class TelevisionTests(unittest.TestCase):
     def payload(self,**kw):return {'folder':self.show.name,'tvdb_id':123,'metadata':{'title':'Example Show'},'replace_existing':True,**kw}
     def approve(self,payload):
         r=self.client.post('/api/tv/write/preview',json=payload);self.assertEqual(r.status_code,200,r.text);return {**payload,'review_token':r.json()['review_token']}
+    def test_tv_folder_rename_and_interrupted_recovery_on_unsupported_share(self):
+        import errno
+        main.tv_services['scan']()
+        original=self.video.read_bytes()
+        unlink=Path.unlink;calls=0
+        def interrupt(path,*args,**kwargs):
+            nonlocal calls
+            if path==self.video:
+                calls+=1
+                if calls==1: raise OSError('Simulated interrupted commit')
+            return unlink(path,*args,**kwargs)
+        payload=self.approve(self.payload(folder_name='Renamed Show'))
+        with patch('app.folder_rename._atomic_rename_no_replace',side_effect=OSError(errno.EINVAL,'unsupported')),patch.object(Path,'unlink',interrupt):
+            response=self.client.post('/api/tv/write',json=payload,headers=self.unlock())
+        self.assertEqual(response.status_code,409,response.text)
+        self.assertIn('Folder rename paused',response.text)
+        self.assertEqual((self.root/'Renamed Show'/'Season 01'/self.video.name).read_bytes(),original)
+        job=self.client.get('/api/folder-renames').json()['renames'][0]
+        response=self.client.post('/api/folder-renames/recover',json={'id':job['id']},headers=self.unlock())
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertFalse(self.show.exists())
+        self.assertEqual((self.root/'Renamed Show'/'Season 01'/self.video.name).read_bytes(),original)
+        self.assertEqual(self.client.get('/api/tv/library').json()['shows'][0]['folder'],'Renamed Show')
+        self.assertFalse(self.client.get('/api/folder-renames').json()['renames'])
+
     def test_separate_tv_settings_and_combined_format(self):
         headers=self.unlock();cfg=self.client.get('/api/settings').json()
         cfg.update(tv_sort_ignore_prefixes=['Le','La'],sort_ignore_prefixes=['The'],tv_filename_format='{title} S{season}E{episode}',tv_multi_episode_filename_format='{show} S{season}E{episode}')

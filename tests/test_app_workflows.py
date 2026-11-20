@@ -348,4 +348,78 @@ class AppWorkflowTests(unittest.TestCase):
         r=self.client.post('/api/write',json={**self.approve(payload),'selected_operations':['file:video.mkv']},headers=self.unlock());self.assertEqual(r.status_code,400)
 
 
+    def test_incremental_movie_scan_reuses_records_and_detects_changes(self):
+        first=main.scan_library()
+        self.assertEqual(first['new'],1)
+        self.assertTrue(self.client.get('/api/library').json()['movies'][0]['is_new'])
+        with patch.object(main,'read_movie_metadata',side_effect=AssertionError('Unchanged NFO reread')),patch.object(main,'video_info',side_effect=AssertionError('Unchanged video reprobed')):
+            second=main.scan_library()
+        self.assertEqual(second['reused'],1);self.assertEqual(second['new'],0)
+        (self.movie/'movie.nfo').write_text('<movie><title>Changed title</title></movie>')
+        changed=main.scan_library();self.assertEqual(changed['updated'],1)
+        self.assertEqual(self.client.get('/api/library').json()['movies'][0]['metadata']['title'],'Changed title')
+        added=self.root/'Already tagged';added.mkdir();(added/'Movie.mkv').write_bytes(b'NEW')
+        (added/'movie.nfo').write_text('<movie><title>Already tagged</title></movie>')
+        third=main.scan_library();self.assertEqual(third['new'],1);self.assertEqual(third['reused'],1)
+        records=self.client.get('/api/library').json()['movies']
+        self.assertTrue(all(m['is_new'] for m in records))
+        self.client.post('/api/library/mark-seen',json={'folder':'Already tagged'})
+        main.scan_library()
+        records={m['folder']:m for m in self.client.get('/api/library').json()['movies']}
+        self.assertFalse(records['Already tagged']['is_new']);self.assertTrue(records['Film']['is_new'])
+        self.client.post('/api/library/mark-seen',json={})
+        self.assertFalse(any(m['is_new'] for m in self.client.get('/api/library').json()['movies']))
+
+    def test_existing_index_is_not_marked_new_when_upgrading(self):
+        main.scan_library()
+        with main.database() as db: db.execute('DROP TABLE movie_tracking')
+        record=self.client.get('/api/library').json()['movies'][0]
+        self.assertFalse(record['is_new'])
+        self.assertEqual(record['discovered'],0)
+        main.scan_library()
+        self.assertFalse(self.client.get('/api/library').json()['movies'][0]['is_new'])
+
+    def test_movie_failed_probe_is_retried_and_cancel_keeps_index(self):
+        main.scan_library()
+        self.video.write_bytes(b'CHANGED')
+        original=main.video_info
+        def failed(path): return {**original(path),'probe_note':'Timed out'}
+        with patch.object(main,'video_info',side_effect=failed):
+            self.assertEqual(len(main.scan_library()['warnings']),1)
+        with patch.object(main,'video_info',wraps=original) as probe:
+            main.scan_library();self.assertEqual(probe.call_count,1)
+        main.scan_library(cancelled=lambda:True)
+        self.assertEqual(self.client.get('/api/library').json()['count'],1)
+
+    def test_folder_rename_compatibility_through_movie_review(self):
+        main.scan_library();headers=self.unlock()
+        import errno
+        payload=self.payload(rename_folder=True,folder_name='Clean Movie',rename_videos=False)
+        with patch('app.folder_rename._atomic_rename_no_replace',side_effect=OSError(errno.EINVAL,'unsupported')):
+            response=self.client.post('/api/write',json=self.approve(payload),headers=headers)
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertFalse(self.movie.exists());self.assertEqual((self.root/'Clean Movie'/'Film.mkv').read_bytes(),b'VIDEO MUST STAY EXACT')
+        record=self.client.get('/api/library').json()['movies'][0]
+        self.assertEqual(record['folder'],'Clean Movie');self.assertTrue(record['is_new'])
+
+    def test_pending_folder_rename_recovery_api_and_scan_guard(self):
+        from app.folder_rename import rename_folder
+        import errno
+        main.scan_library()
+        def crash(*args,**kwargs):raise KeyboardInterrupt()
+        with patch('app.folder_rename._atomic_rename_no_replace',side_effect=OSError(errno.EINVAL,'unsupported')),patch('app.folder_rename.os.link',side_effect=crash):
+            with self.assertRaises(KeyboardInterrupt):rename_folder(self.movie,self.root/'Recovered',main.DATA_DIR,'movies')
+        job=self.client.get('/api/folder-renames').json()['renames'][0]
+        self.assertEqual(self.client.post('/api/scan/start').status_code,409)
+        self.assertEqual(self.client.post('/api/tv/scan/start').status_code,409)
+        self.assertEqual(self.client.post('/api/folder-renames/recover',json={'id':job['id']}).status_code,423)
+        with patch.dict(os.environ,{'ARTFLIX_READ_ONLY':'true'}):
+            self.assertEqual(self.client.post('/api/folder-renames/recover',json={'id':job['id']},headers=self.unlock()).status_code,403)
+        response=self.client.post('/api/folder-renames/recover',json={'id':job['id']},headers=self.unlock())
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(self.client.get('/api/folder-renames').json()['renames'],[])
+        self.assertEqual(self.client.get('/api/library').json()['movies'][0]['folder'],'Recovered')
+        self.assertEqual((self.root/'Recovered'/'Film.mkv').read_bytes(),b'VIDEO MUST STAY EXACT')
+
+
 if __name__=='__main__':unittest.main()

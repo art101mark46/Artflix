@@ -194,7 +194,7 @@ Match a show through **Find or change TVDB match**, or enter its TVDB ID and rev
 
 TV has Show Details, Episodes, Actors, Artwork and Metadata tabs. You can edit show fields/certificates and genre tags, browse and save actor portraits, refresh fanart.tv choices, preview artwork with arrows/cursor keys, save an image individually, inspect an individual file and edit its episode NFO fields. TV searches autocomplete from indexed values, include missing episodes and missing metadata, and support saved/archived searches separately from movies.
 
-Saving uses the same padlock, server read-only protection and signed before/after review as movies. Existing show and episode NFOs preserve unmanaged fields such as watched state. Replacements and metadata clearing are backed up under `/config/tv-backups`; **Restore previous metadata or artwork** restores a reviewed file. Metadata clearing never deletes videos or subtitles. Episode and show-folder renaming is off by default, includes matching subtitle/NFO sidecars, and uses atomic no-overwrite moves. Collisions stop the operation. Combined-episode files count correctly and can be renamed, but this release preserves their existing NFOs: disable bulk episode NFO generation for a show containing combined files, or use separate episode files for individual NFO editing. This release does not generate `season.nfo` or fetch provider season artwork.
+Saving uses the same padlock, server read-only protection and signed before/after review as movies. Existing show and episode NFOs preserve unmanaged fields such as watched state. Replacements and metadata clearing are backed up under `/config/tv-backups`; **Restore previous metadata or artwork** restores a reviewed file. Metadata clearing never deletes videos or subtitles. Episode and show-folder renaming is off by default, includes matching subtitle/NFO sidecars, and uses protected no-overwrite moves (with the recoverable Unraid folder fallback described below). Collisions stop the operation. Combined-episode files count correctly and can be renamed, but this release preserves their existing NFOs: disable bulk episode NFO generation for a show containing combined files, or use separate episode files for individual NFO editing. This release does not generate `season.nfo` or fetch provider season artwork.
 
 See [Jellyfin TV organization](https://jellyfin.org/docs/general/server/media/shows/) and [Kodi TV NFO files](https://kodi.wiki/view/NFO_files/TV_shows) for media-server conventions. TV metadata and fanart calls are tested with controlled provider responses; live access depends on your own keys and provider licensing.
 
@@ -401,3 +401,47 @@ The current browser remembers dismissal for that scan, so refreshes and library
 switches do not bring it back. A new scan opens a new banner automatically.
 Active scans retain the Cancel scan button; dismissal never cancels a scan or
 clears library data, warning reports or resume checkpoints.
+
+
+### Unraid folder renaming, new movies and incremental scans (0.4.8)
+
+Movie and TV folder renames now fall back to a recoverable operation when the
+share rejects Linux protected atomic renames. ArtFlix exclusively creates the
+new folder, stages all regular files as hard links (including extras, artwork,
+actors and nested season folders), verifies them, then removes the old names and
+empty directories. Video bytes are not copied. Existing destination folders are
+refused, symlinks/special files are refused by the fallback, and directory owners
+and attributes are retained. Keep other applications from modifying that folder
+while renaming. Shares must allow hard links between the old and new folders;
+if they refuse this, staging is undone and originals retained. There is no
+cross-disk video-copy fallback.
+
+Recovery journals are stored under `/config/folder-renames`. If interrupted,
+open Settings → About → Folder rename recovery, unlock the padlock, and choose
+Finish rename. Cancel rename is available before removal of original names
+begins. During recovery there may be two folder names referencing the same video
+bytes; do not delete either manually. Other ArtFlix library writes and new scans
+are blocked until the pending operation is resolved. Unexpected concurrent file
+changes are preserved and may require manual investigation. This fallback is
+recoverable, rather than a single atomic filesystem operation.
+
+New movies have a blue New badge in addition to the star, regardless of whether
+they already have NFO files. Use ★ New (count) above the Movies list to show them
+quickly, and Mark all seen to clear these discovery highlights. They persist in
+SQLite across scans and restarts until cleared. Existing indexed movies are not
+retroactively marked New on upgrade; a completely new library starts with all
+new discoveries. Missing-metadata stars/amber/red indicators remain separate.
+
+Movie Scan now checks file statistics and reuses unchanged SQLite entries,
+rebuilding only new or changed folders. It does not refresh providers or download
+metadata. Successful video probes remain cached; failed probes are retried.
+The banner reports new, unchanged and updated counts. The first scan after this
+upgrade establishes folder checkpoints and may still take the previous amount
+of time. Later scans must still list/stat library files to detect changes, but
+skip unchanged NFO parsing and video inspection. Movie scan status now also
+persists under `/config/movie-scan-status.json`; clicking Scan after interruption
+reuses completed unchanged entries. For an individual movie's provider metadata,
+continue to use Refresh movie and review the proposed changes.
+
+Verification: 120 automated tests plus fixture-only browser checks covering the
+New filter, persisted highlights, unchanged-scan counts and folder recovery UI.

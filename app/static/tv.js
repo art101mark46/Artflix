@@ -17,6 +17,7 @@ const movieCancelClick=$('#scan-cancel').onclick;
 $('#scan').onclick=()=>libraryMode==='tv'?scanTV():movieScanClick();
 modeButton.onclick=()=>switchLibrary(libraryMode==='movies'?'tv':'movies');
 async function switchLibrary(mode){
+ newMovieControls.hidden=mode==='tv';
  libraryMode=mode;tvEpoch++;selectionVersion++;const switchVersion=tvEpoch;try{localStorage.setItem('artflix-library-mode',mode)}catch{}modeButton.title=mode==='tv'?'Switch to Movies':'Switch to TV Shows';modeButton.setAttribute('aria-label',mode==='tv'?'TV Shows — switch to Movies':'Movies — switch to TV Shows');
  $('#scan').textContent='Scan';$('#scan').title=mode==='tv'?'Scan folder for new TV shows':'Scan folder for new movies';$('#scan-cancel').onclick=mode==='tv'?async()=>{await api('/api/tv/scan/cancel',{method:'POST'})}:movieCancelClick;scanProgress.hidden=true;
  tvAlphabet.hidden=mode!=='tv';

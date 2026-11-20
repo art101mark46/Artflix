@@ -31,7 +31,9 @@ from app.encoding import FilesystemJSONResponse, valid_filename, display_filenam
 from app.tv_artwork import tmdb_choices, tvdb_choices
 from app.television import safe_image
 from app.library import read_movie_metadata, preserve_unmanaged_nfo_fields, metadata_document
-from app.filesystem import rename_media_files, rename_no_replace
+from app.filesystem import rename_media_files
+from app.folder_rename import rename_folder, pending as pending_folder_renames, recover as recover_folder_rename
+from app.movie_scan import signature as movie_signature
 from app.control import EditSessions, ReviewSigner, fingerprint, COMMIT_LOCK
 from app.review_selection import select_operations, subset_outputs
 from app.jobs import ScanJobs
@@ -49,7 +51,7 @@ VIDEO_EXTENSIONS = {".mkv", ".mp4", ".m4v", ".avi", ".mov", ".wmv", ".mpeg", ".m
 
 edit_sessions = EditSessions()
 review_signer = ReviewSigner()
-scan_jobs = ScanJobs()
+scan_jobs = ScanJobs(state_path=lambda: DATA_DIR / "movie-scan-status.json")
 
 app = FastAPI(title="ArtFlix Movie Manager", version=VERSION, default_response_class=FilesystemJSONResponse)
 app.mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static")
@@ -242,10 +244,12 @@ def require_unlocked(request: Request):
         raise HTTPException(423, "Unlock the padlock before making changes.")
 
 
-def require_library_writes(request: Request):
+def require_library_writes(request: Request, recovery=False):
     if library_read_only():
         raise HTTPException(403, "Library is in read-only mode. Saving, renaming and resetting are disabled.")
     require_unlocked(request)
+    if not recovery and pending_folder_renames(DATA_DIR):
+        raise HTTPException(409, "Finish or cancel the pending folder rename in Settings → About first.")
 
 
 def backup_existing_metadata(path: Path, folder: Path):
@@ -404,63 +408,75 @@ def restore_backup(req: RestoreRequest, request: Request):
     return {'ok':True, 'folder':req.folder, 'written':['Restored '+plan['backup']['relative'].as_posix()]}
 
 
+def ensure_no_pending_folder_rename():
+    if pending_folder_renames(DATA_DIR):
+        raise HTTPException(409, 'Resolve the pending folder rename in Settings → About before scanning.')
+
+
 def scan_library(progress=None, cancelled=None):
     progress = progress or (lambda **kwargs: None)
     cancelled = cancelled or (lambda: False)
+    ensure_no_pending_folder_rename()
     root, write = paths()
     movies, warnings = [], ScanWarnings(database,"movies",root)
     folders = sorted((p for p in root.iterdir() if p.is_dir() and not p.is_symlink()), key=lambda p: p.name.casefold())
-    with database() as db:
-        known_paths = {row[0] for row in db.execute("SELECT path FROM library").fetchall()}
-    new_count = 0
-    progress(total=len(folders), checked=0, found=0, new=0, errors=0)
+    new_count = reused = updated = 0
+    progress(total=len(folders), checked=0, found=0, new=0, reused=0, updated=0, errors=0)
     for number, folder in enumerate(folders, 1):
-        if cancelled():
-            break
+        if cancelled(): break
         progress(current=display_filename(folder.name))
         try:
-            invalid=next((p for p in [folder,*folder.iterdir()] if not valid_filename(p)),None)
-            if invalid is not None:
-                warnings.append({'folder':folder.name,'path':str(invalid),'error':'Skipped unsupported filename bytes: '+display_filename(invalid.name)+'. Files were left untouched.'})
-                continue
-            if root not in folder.resolve().parents or write not in (write / folder.relative_to(root)).resolve().parents:
-                continue
-            files = [p for p in folder.iterdir() if p.is_file() and not p.is_symlink()]
-            roles = classify_media(folder, VIDEO_EXTENSIONS)
-            videos = [p.name for p in roles["main"]]
-            if not videos:
-                continue
-            media = []
-            for path in files:
-                if cancelled():
-                    break
-                if path in roles["main"]:
-                    info = video_info(path)
-                    media.append(info)
-                    if info.get("probe_note"):
-                        warnings.append({"folder": folder.name, "path":str(path), "error": path.name + ": " + info["probe_note"]})
-            if cancelled():
-                break
-            existing = read_movie_metadata(folder, VIDEO_EXTENSIONS, media)
-            movie = {**existing, "extras": roles["extras"], "ambiguous_videos": roles["ambiguous"], "folder": folder.relative_to(root).as_posix(), "name": folder.name, "videos": videos, "media": media,
-                     "assets": sorted(p.name for p in files if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".nfo"})}
-            movies.append(movie)
-            new_count += str(folder) not in known_paths
-            with database() as db:
-                db.execute("INSERT OR REPLACE INTO library VALUES (?,?)", (str(folder), json.dumps(movie)))
+            with COMMIT_LOCK:
+                ensure_no_pending_folder_rename()
+                invalid=next((p for p in [folder,*folder.iterdir()] if not valid_filename(p)),None)
+                if invalid is not None:
+                    warnings.append({'folder':folder.name,'path':str(invalid),'error':'Skipped unsupported filename bytes: '+display_filename(invalid.name)+'. Files were left untouched.'})
+                    continue
+                if root not in folder.resolve().parents or write not in (write / folder.relative_to(root)).resolve().parents: continue
+                before = movie_signature(folder, cancelled)
+                if before is None: break
+                with database() as db:
+                    row = db.execute('SELECT data FROM library WHERE path=?',(str(folder),)).fetchone()
+                    checkpoint = db.execute('SELECT signature FROM movie_scan_checkpoints WHERE path=?',(str(folder),)).fetchone()
+                if row and checkpoint and checkpoint[0] == before:
+                    movies.append(json.loads(row[0])); reused += 1
+                    continue
+                files = [p for p in folder.iterdir() if p.is_file() and not p.is_symlink()]
+                roles = classify_media(folder, VIDEO_EXTENSIONS)
+                videos = [p.name for p in roles["main"]]
+                if not videos: continue
+                media = []
+                for path in roles['main']:
+                    if cancelled(): break
+                    info = video_info(path); media.append(info)
+                    if info.get('probe_note'):
+                        warnings.append({'folder':folder.name,'path':str(path),'error':path.name+': '+info['probe_note']})
+                if cancelled(): break
+                existing = read_movie_metadata(folder, VIDEO_EXTENSIONS, media)
+                movie = {**existing, "extras": roles["extras"], "ambiguous_videos": roles["ambiguous"], "folder": folder.relative_to(root).as_posix(), "name": folder.name, "videos": videos, "media": media,
+                         "assets": sorted(p.name for p in files if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp", ".nfo"})}
+                movies.append(movie); new_count += not bool(row); updated += bool(row)
+                after = movie_signature(folder, cancelled)
+                with database() as db:
+                    db.execute('INSERT OR IGNORE INTO movie_tracking VALUES (?,?,1)',(str(folder),time.time()))
+                    db.execute('INSERT OR REPLACE INTO library VALUES (?,?)',(str(folder),json.dumps(movie)))
+                    if before == after and not any(v.get('probe_note') for v in media):
+                        db.execute('INSERT OR REPLACE INTO movie_scan_checkpoints VALUES (?,?)',(str(folder),after))
+                    else: db.execute('DELETE FROM movie_scan_checkpoints WHERE path=?',(str(folder),))
         except OSError as error:
             warnings.append({"folder": folder.name, "error": str(error)})
         finally:
-            progress(checked=number, found=len(movies), new=new_count, errors=len(warnings), warnings=warnings[-20:])
+            progress(checked=number, found=len(movies), new=new_count, reused=reused, updated=updated, errors=len(warnings), warnings=warnings[-20:])
     stopped = cancelled()
     if not stopped:
-        with database() as db:
+        with COMMIT_LOCK, database() as db:
             current_paths = {str(root / movie["folder"]) for movie in movies}
             skipped = {str(root / item["folder"]) for item in warnings}
             for (old_path,) in db.execute("SELECT path FROM library").fetchall():
                 if Path(old_path).parent == root and old_path not in current_paths and old_path not in skipped:
-                    db.execute("DELETE FROM library WHERE path=?", (old_path,))
-    return {"count": len(movies), "root": str(root), "warnings": warnings, "cancelled": stopped}
+                    for table in ('library','movie_scan_checkpoints','movie_tracking'):
+                        db.execute('DELETE FROM '+table+' WHERE path=?',(old_path,))
+    return {"count": len(movies), "root": str(root), "warnings": warnings, "cancelled": stopped, "reused":reused, "updated":updated, "new":new_count}
 
 
 @app.get("/api/scan")
@@ -473,8 +489,10 @@ def scan():
 
 @app.post("/api/scan/start")
 def start_scan():
-    paths()
-    return scan_jobs.start(scan_library)
+    with COMMIT_LOCK:
+        ensure_no_pending_folder_rename()
+        paths()
+        return scan_jobs.start(scan_library)
 
 
 @app.get("/api/scan/status")
@@ -637,6 +655,10 @@ def database():
     db = sqlite3.connect(DATA_DIR / "artflix.sqlite3", timeout=30)
     db.execute("CREATE TABLE IF NOT EXISTS media_cache (path TEXT PRIMARY KEY, signature TEXT, data TEXT)")
     db.execute("CREATE TABLE IF NOT EXISTS library (path TEXT PRIMARY KEY, data TEXT)")
+    db.execute("CREATE TABLE IF NOT EXISTS movie_scan_checkpoints (path TEXT PRIMARY KEY, signature TEXT)")
+    tracking_exists = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='movie_tracking'").fetchone()
+    db.execute("CREATE TABLE IF NOT EXISTS movie_tracking (path TEXT PRIMARY KEY, discovered REAL, is_new INTEGER)")
+    if not tracking_exists: db.execute("INSERT OR IGNORE INTO movie_tracking SELECT path,0,0 FROM library")
     db.execute("CREATE TABLE IF NOT EXISTS provider_cache (key TEXT PRIMARY KEY, data TEXT, updated REAL)")
     db.execute("CREATE TABLE IF NOT EXISTS backup_index (id TEXT PRIMARY KEY, folder TEXT, relative_file TEXT, created REAL)")
     db.execute("CREATE TABLE IF NOT EXISTS folder_aliases (old_path TEXT PRIMARY KEY, new_path TEXT)")
@@ -941,7 +963,7 @@ async def write_metadata(req: WriteRequest, request: Request):
         save_asset_state(target, state)
         if plan['destination'] != target:
             try:
-                rename_no_replace(target, plan['destination'])
+                move_library_folder(target, plan['destination'], 'movies')
             except OSError as error:
                 raise HTTPException(409, f'Metadata was saved but the folder could not be safely renamed: {error}')
             record_folder_alias(target, plan['destination'])
@@ -1045,6 +1067,7 @@ def stored_library():
     root = Path(load_config()["root_path"]).resolve()
     with database() as db:
         rows = db.execute("SELECT path, data FROM library ORDER BY path COLLATE NOCASE").fetchall()
+        tracking = {row[0]:row[1:] for row in db.execute("SELECT path,discovered,is_new FROM movie_tracking")}
     movies = []
     for path, data in rows:
         if Path(path).parent != root:
@@ -1062,6 +1085,8 @@ def stored_library():
                         movie.update(videos=sorted(primary), extras=roles["extras"], ambiguous_videos=roles["ambiguous"])
                         with database() as db:
                             db.execute("UPDATE library SET data=? WHERE path=?", (json.dumps(movie), path))
+                discovered, is_new = tracking.get(path,(0,0))
+                movie.update(discovered=discovered,is_new=bool(is_new))
                 movies.append(movie)
         except (ValueError, TypeError):
             continue
@@ -1169,8 +1194,12 @@ def refresh_index_entry(folder, old_folder=None):
               'assets': sorted(p.name for p in files if p.suffix.lower() in {'.jpg', '.jpeg', '.png', '.webp', '.nfo'})}
     with database() as db:
         if old_folder and old_folder != folder:
+            db.execute('UPDATE OR REPLACE movie_tracking SET path=? WHERE path=?',(str(source),str(root/old_folder)))
+            db.execute('DELETE FROM movie_scan_checkpoints WHERE path=?',(str(root/old_folder),))
             db.execute('DELETE FROM library WHERE path=?', (str(root / old_folder),))
+        db.execute('INSERT OR IGNORE INTO movie_tracking VALUES (?,?,0)',(str(source),time.time()))
         db.execute('INSERT OR REPLACE INTO library VALUES (?,?)', (str(source), json.dumps(record)))
+        db.execute('DELETE FROM movie_scan_checkpoints WHERE path=?',(str(source),))
     return record
 
 
@@ -1434,3 +1463,63 @@ from app.maintenance import install_maintenance
 install_maintenance(app, sys.modules[__name__])
 
 install_scan_issues(app, sys.modules[__name__])
+
+
+class SeenMovies(BaseModel):
+    folder: str | None = None
+
+
+@app.post('/api/library/mark-seen')
+def mark_movies_seen(req: SeenMovies):
+    root = Path(load_config()['root_path']).resolve()
+    with database() as db:
+        for (path,) in db.execute('SELECT path FROM movie_tracking WHERE is_new=1').fetchall():
+            if Path(path).parent == root and (req.folder is None or Path(path).name == req.folder):
+                db.execute('UPDATE movie_tracking SET is_new=0 WHERE path=?',(path,))
+    return {'ok':True}
+
+
+def move_library_folder(source, destination, library):
+    if scan_jobs.active() or tv_services['jobs'].active():
+        raise OSError('Finish or cancel library scans before renaming a folder')
+    rename_folder(source,destination,DATA_DIR,library)
+
+
+@app.get('/api/folder-renames')
+def folder_rename_status():
+    return {'renames':[{'id':r['id'],'source':Path(r['source']).name,
+                       'destination':Path(r['destination']).name,'library':r['library'],
+                       'can_cancel':r['phase']=='linking'} for r in pending_folder_renames(DATA_DIR)]}
+
+
+class RecoverFolder(BaseModel):
+    id: str
+    cancel: bool = False
+
+
+@app.post('/api/folder-renames/recover')
+def recover_folder(req:RecoverFolder,request:Request):
+    with COMMIT_LOCK:
+        require_library_writes(request,recovery=True)
+        if scan_jobs.active() or tv_services['jobs'].active(): raise HTTPException(409,'Finish or cancel scans first.')
+        jobs={r['id']:r for r in pending_folder_renames(DATA_DIR)}
+        if req.id not in jobs: raise HTTPException(404,'Pending rename not found.')
+        job=jobs[req.id]
+        root,write=paths() if job['library']=='movies' else tv_services['roots']()
+        source,destination=Path(job['source']),Path(job['destination'])
+        if source.parent!=write or destination.parent!=write:
+            raise HTTPException(409,'Restore the original library path settings before recovering this rename.')
+        try: recover_folder_rename(DATA_DIR,req.id,req.cancel)
+        except (OSError,ValueError) as error: raise HTTPException(409,str(error)) from error
+        if not req.cancel:
+            if job['library']=='movies':
+                record_folder_alias(source,destination)
+                refresh_index_entry(destination.name,source.name)
+            else:
+                with database() as db:
+                    db.execute('UPDATE tv_backups SET folder=? WHERE folder=?',(str(destination),str(source)))
+                    for table in ('tv_display_images','tv_episode_coverage'):
+                        db.execute('UPDATE OR REPLACE '+table+' SET path=? WHERE path=?',(str(root/destination.name),str(root/source.name)))
+                    db.execute('DELETE FROM tv_library WHERE path=?',(str(root/source.name),))
+                tv_services['refresh_index'](destination.name)
+        return {'ok':True}
